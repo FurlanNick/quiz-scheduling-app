@@ -1,4 +1,10 @@
 # Quiz Scheduling App
+
+## What is the Quiz Scheduling App?
+The Quiz Scheduling App is a tool designed to generate schedules for quiz tournaments. Its primary purpose is to create valid and fair schedules by taking into account various constraints. 
+
+In this quiz format, matches involve 3 teams. During each match, teams are assigned to one of three different bench positions. The app's main goal is to find schedules that optimally balance various logistical considerations (like venue availability) and fairness constraints. These fairness constraints include ensuring teams face unique opponents, distributing bench positions and room assignments as evenly as possible, and minimizing consecutive (back-to-back) games for any team.
+
 A simple app to build schedules for Quiz Meet tournaments. Where possible, this tool generates *valid* schedules that satisfy several constraints described below.
 
 ## Problem Description and Solution Approach
@@ -147,6 +153,10 @@ http://127.0.0.1:8000/docs
 ```
 
 ## Usage
+
+Users interact with the Quiz Scheduling App by providing several key parameters: the number of teams participating, the desired number of matches each team should play, the number of available rooms for matches, and the number of available time slots. These inputs can be provided either through an intuitive web interface (an HTML page) or programmatically by calling the available API endpoints.
+
+Based on these inputs, the application processes the request and attempts to generate a valid and fair schedule. The output is typically the generated schedule itself. If the constraints and parameters make it impossible to find a valid schedule, the application will indicate this, sometimes suggesting which constraints might have been relaxed to produce a near-valid schedule.
 
 ### Frontend
 
