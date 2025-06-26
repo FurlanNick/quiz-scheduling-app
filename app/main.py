@@ -83,12 +83,43 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
                     ScheduleItem(
                         TimeSlot=row["TimeSlot"],
                         Room=row["Room"],
-                        Matchup=row["Matchup"],
+                        Matchup=row["Matchup"], # Matchup is already a Pydantic model instance from ScheduleSolver
                     )
-                    for _, row in schedule.iterrows()
+                    for _, row in schedule.iterrows() # schedule is the DataFrame
                 ]
+
+                # Transform DataFrame for grid display
+                grid_data = {}
+                max_sched_ts = 0
+                max_sched_room = 0
+
+                if not schedule.empty:
+                    for _, row in schedule.iterrows():
+                        ts = int(row["TimeSlot"])
+                        room = int(row["Room"])
+                        teams_in_match = list(row["Matchup"].teams) # (T_seat1, T_seat2, T_seat3)
+
+                        max_sched_ts = max(max_sched_ts, ts)
+                        max_sched_room = max(max_sched_room, room)
+
+                        ts_key = f"ts_{ts}"
+                        room_key = f"room_{room}"
+
+                        if ts_key not in grid_data:
+                            grid_data[ts_key] = {}
+
+                        # Ensure teams_in_match is a list of 3 (it should be)
+                        # If a matchup could have fewer than 3 teams (not current case) or if a seat can be empty,
+                        # this might need padding with a placeholder like "---" or None.
+                        # Assuming row["Matchup"].teams always provides 3 team IDs.
+                        grid_data[ts_key][room_key] = teams_in_match
+
                 return ScheduleResponse(
-                    schedule=schedule_items, constraints_relaxed=constraints_relaxed
+                    schedule=schedule_items,
+                    constraints_relaxed=constraints_relaxed,
+                    grid_schedule=grid_data,
+                    max_sched_timeslot=max_sched_ts,
+                    max_sched_room=max_sched_room
                 )
         raise HTTPException(status_code=404, detail="No valid schedule found")
     except Exception as e:

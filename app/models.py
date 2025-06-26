@@ -31,6 +31,16 @@ class ScheduleItem(BaseModel):
     Matchup: Matchup
 
 
+from typing import Union # Added for Union type
+
 class ScheduleResponse(BaseModel):
-    schedule: List[ScheduleItem]
+    schedule: List[ScheduleItem] # Original list-based schedule
     constraints_relaxed: List[str]
+
+    # New fields for grid display
+    grid_schedule: Dict[str, Dict[str, List[Union[int, str]]]] = Field(
+        default_factory=dict,
+        description="Schedule data formatted for a grid. Keyed by timeslot (e.g., 'ts_1'), then room (e.g., 'room_1'), with a list of team IDs for seats [seat1, seat2, seat3]. Empty seats can be represented by a placeholder like '---'."
+    )
+    max_sched_timeslot: int = Field(0, description="The highest timeslot number present in the generated schedule.")
+    max_sched_room: int = Field(0, description="The highest room number present in the generated schedule.")
