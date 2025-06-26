@@ -191,26 +191,52 @@ class ScheduleSolver:
             if 1 <= slot_to_check_quota_at <= self.n_time_slots: # Ensure slot is valid
                 for team_id in range(1, self.n_teams + 1):
                     observed_matches = actual_matches_played[team_id][slot_to_check_quota_at]
-                    if observed_matches != target_cumulative_quota:
-                        print(
-                            f"Validation Error (Phase Quota): Team {team_id} at end of phase {p + 1} "
-                            f"(Timeslot {slot_to_check_quota_at}) has {observed_matches} matches, expected {target_cumulative_quota}."
-                        )
-                        return False
-            elif p < num_phases -1 : # Only a critical error if it's not the very final phase end potentially truncated by n_time_slots
-                 print(f"Warning (Check Logic): Slot to check quota ({slot_to_check_quota_at}) for phase {p+1} is out of bounds ({self.n_time_slots}).")
-                 # This would be a problem if quota isn't met by n_time_slots for the final phase.
 
-        # Final check: ensure total matches are met by the end of all available time slots
-        # This is already covered by the existing _enforce_room_diversity's first constraint and its check.
-        # No, that check is on team_rooms which is just a list of rooms, not timed.
-        # The specific check for total matches is in MatchupSolver.check_matchups.
-        # Here, we can add a redundant check for total matches by self.n_time_slots
+                    is_final_phase_quota_check = (target_cumulative_quota == self.n_matches_per_team)
+
+                    if is_final_phase_quota_check:
+                        if observed_matches != target_cumulative_quota:
+                            print(
+                                f"Validation Error (Final Phase Quota): Team {team_id} at end of phase {p + 1} "
+                                f"(Timeslot {slot_to_check_quota_at}) has {observed_matches} matches, expected exactly {target_cumulative_quota}."
+                            )
+                            return False
+                    else: # Intermediate phase
+                        if observed_matches < target_cumulative_quota:
+                            print(
+                                f"Validation Error (Intermediate Phase Quota): Team {team_id} at end of phase {p + 1} "
+                                f"(Timeslot {slot_to_check_quota_at}) has {observed_matches} matches, expected at least {target_cumulative_quota}."
+                            )
+                            return False
+                        # Also, for intermediate phases, they shouldn't exceed the *next* phase's quota too early,
+                        # but the primary check is meeting the current phase's minimum.
+                        # The total matches constraint will cap the overall.
+                        # A more advanced check could ensure they don't play *too many* more than target_cumulative_quota
+                        # if that becomes a requirement (e.g. not more than target_cumulative_quota + chunk_size/2 )
+                        # For now, >= is sufficient given the enforcement was also changed to >= for intermediate.
+
+            elif p < num_phases -1 :
+                 print(f"Warning (Check Logic): Slot to check quota ({slot_to_check_quota_at}) for phase {p+1} is out of bounds ({self.n_time_slots}). This implies an issue in slot calculation or schedule length.")
+                 # This implies a mismatch between calculated structure and available slots, which is problematic.
+                 return False # Treat as failure if an intermediate phase check point is invalid
+
+        # Final check: ensure total matches are exactly n_matches_per_team by the last defined timeslot.
+        # This is crucial and should use equality.
+        last_slot_in_schedule = self.n_time_slots
+        # If end_of_phase_active_slot_indices is not empty, the last element is the end of all active play
+        if end_of_phase_active_slot_indices:
+            last_slot_in_schedule = end_of_phase_active_slot_indices[-1]
+            if last_slot_in_schedule > self.n_time_slots : # Should have been caught by earlier validation if so
+                last_slot_in_schedule = self.n_time_slots
+
+
         for team_id in range(1, self.n_teams + 1):
-            if actual_matches_played[team_id][self.n_time_slots] != self.n_matches_per_team:
+            # Check at the very end of all active play, or at n_time_slots if that's earlier/different
+            final_observed_matches = actual_matches_played[team_id][last_slot_in_schedule]
+            if final_observed_matches != self.n_matches_per_team:
                 print(
-                    f"Validation Error (Total Matches): Team {team_id} has {actual_matches_played[team_id][self.n_time_slots]} total matches, "
-                    f"expected {self.n_matches_per_team} by end of schedule."
+                    f"Validation Error (Total Matches): Team {team_id} has {final_observed_matches} total matches by slot {last_slot_in_schedule}, "
+                    f"expected {self.n_matches_per_team}."
                 )
                 return False
         return True
@@ -357,8 +383,16 @@ class ScheduleSolver:
 
             if 1 <= slot_to_check_quota_at <= self.n_time_slots : # Ensure slot is within bounds
                 for t_team_idx in range(1, self.n_teams + 1):
-                    problem += matches_played_to_ts[t_team_idx][slot_to_check_quota_at] == target_cumulative_quota, \
-                               f"Quota_Phase{p+1}_Team{t_team_idx}_TS{slot_to_check_quota_at}"
+                    # If it's an intermediate phase, use >= (teams must complete at least the quota)
+                    # If it's the final phase, use == (teams must complete exactly the total n_matches_per_team)
+                    is_final_phase_quota = (target_cumulative_quota == self.n_matches_per_team)
+
+                    if is_final_phase_quota:
+                        problem += matches_played_to_ts[t_team_idx][slot_to_check_quota_at] == target_cumulative_quota, \
+                                   f"Quota_FinalPhase_Team{t_team_idx}_TS{slot_to_check_quota_at}"
+                    else:
+                        problem += matches_played_to_ts[t_team_idx][slot_to_check_quota_at] >= target_cumulative_quota, \
+                                   f"Quota_IntermediatePhase{p+1}_Team{t_team_idx}_TS{slot_to_check_quota_at}"
 
         return problem
 
