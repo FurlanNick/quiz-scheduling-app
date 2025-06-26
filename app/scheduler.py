@@ -249,44 +249,47 @@ class ScheduleSolver:
             return True
 
         num_phases = math.ceil(self.n_matches_per_team / chunk_size)
+        # num_phases and num_breaks are needed for loop bounds and logic here.
+        # These should be consistent with how they were calculated in _calculate_schedule_structure.
         num_phases = math.ceil(self.n_matches_per_team / chunk_size)
         num_breaks = num_phases - 1 if num_phases > 1 else 0
 
-        if num_breaks == 0: # No breaks means no specific quotas at break points to check by this method
-             # However, we should still check if total matches are correct by the end.
-            if self.n_matches_per_team > 0: # Only if matches were expected
-                actual_matches_played_final = {t: 0 for t in range(1, self.n_teams + 1)}
+        if num_breaks == 0:
+            # If no breaks were structured, this specific check for periodic breaks/quotas isn't applicable.
+            # The overall total match count is still important.
+            if self.n_matches_per_team > 0:
+                actual_matches_played_total = {t: 0 for t in range(1, self.n_teams + 1)}
                 for _, row in df_schedule.iterrows():
                     ts = row["TimeSlot"]
-                    # Only count matches within the official number of time slots
-                    if 1 <= ts <= self.n_time_slots:
+                    if 1 <= ts <= self.n_time_slots: # Count matches within the schedule's defined timespan
                         for team_id in row["Matchup"].teams:
                             if 1 <= team_id <= self.n_teams:
-                                actual_matches_played_final[team_id] +=1
+                                actual_matches_played_total[team_id] += 1
 
                 for team_id in range(1, self.n_teams + 1):
-                    if actual_matches_played_final[team_id] != self.n_matches_per_team:
+                    if actual_matches_played_total[team_id] != self.n_matches_per_team:
                         print(
-                            f"Validation Error (Total Matches - No Breaks): Team {team_id} has {actual_matches_played_final[team_id]} total matches, "
+                            f"Validation Error (Total Matches - No Periodic Breaks): Team {team_id} has {actual_matches_played_total[team_id]} total matches, "
                             f"expected {self.n_matches_per_team} by end of schedule (slot {self.n_time_slots})."
                         )
                         return False
-            return True
+            return True # Correctly, no periodic breaks/quotas to check, and total matches (if any) are implicitly checked by overall constraints.
 
-        # Use pre-calculated structure from self
-        # These were set by _calculate_schedule_structure
-        # No need to recalculate active_slots_per_phase_counts here, just use indices.
-        # Validations on structure fitting self.n_time_slots were done in _calculate_schedule_structure.
+        # Use pre-calculated structure from self attributes
+        # self.break_slot_indices
+        # self.end_of_phase_active_slot_indices
+        # self.n_time_slots (calculated total)
 
         # 1. Verify break slots are empty
-        for ts_break in self.break_slot_indices:
-            # Ensure ts_break is a valid timeslot index for df_schedule
-            if 1 <= ts_break <= self.n_time_slots: # self.n_time_slots is the calculated total
+        for ts_break in self.break_slot_indices: # Use instance variable
+            if 1 <= ts_break <= self.n_time_slots:
                 if not df_schedule[df_schedule.TimeSlot == ts_break].empty:
                     print(f"Validation Error (Periodic Breaks): Break time slot {ts_break} is not empty.")
                     return False
-            # else: this break slot was calculated to be beyond the total timeslots, implies error in calculation phase.
-            # This should ideally be caught by _calculate_schedule_structure's internal logic or by ensuring cursor doesn't exceed self.n_time_slots
+            else:
+                # This case implies an issue in _calculate_schedule_structure if a break slot is outside n_time_slots
+                print(f"Warning (Check Logic): Break slot {ts_break} is outside the total time slots {self.n_time_slots}. Inconsistent calculation.")
+                return False # Treat as error because structure is ill-defined for checking
 
         # 2. Verify phase quotas (strict equality for all phases now)
         # Reconstruct cumulative matches from df_schedule
