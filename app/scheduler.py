@@ -519,17 +519,47 @@ class ScheduleSolver:
 
     def _format_solution(self, solution: Dict[str, float], matchups: List[Matchup]):
         data = []
+        # PuLP variable values can sometimes be slightly off due to floating point precision,
+        # e.g., 0.999999999 instead of 1.0. Use a small tolerance for comparison.
+        epsilon = 1e-6
+
         for key, value in solution.items():
-            if value == 1.0:
+            # We are only interested in the 'MatchupRoomTime_...' variables that are selected (value is close to 1.0)
+            if key.startswith("MatchupRoomTime_") and abs(value - 1.0) < epsilon:
                 parts = key.split("_")
-                matchup_idx = int(parts[1])
-                room = int(parts[2])
-                time_slot = int(parts[3])
-                matchup = matchups[matchup_idx]
-                data.append((time_slot, room, matchup))
+                # Expected format: MatchupRoomTime_matchupidx_room_timeslot
+                # parts[0] = "MatchupRoomTime"
+                # parts[1] = matchup_idx
+                # parts[2] = room_num (1-based)
+                # parts[3] = time_slot_num (1-based)
+                if len(parts) >= 4: # Check if we have enough parts
+                    try:
+                        matchup_idx = int(parts[1])
+                        room = int(parts[2])
+                        time_slot = int(parts[3])
+
+                        # Validate matchup_idx before accessing matchups list
+                        if 0 <= matchup_idx < len(matchups):
+                            matchup = matchups[matchup_idx]
+                            data.append((time_slot, room, matchup))
+                        else:
+                            print(f"Warning (_format_solution): Invalid matchup_idx {matchup_idx} for key {key}. Max index is {len(matchups)-1}.")
+                    except ValueError:
+                        print(f"Warning (_format_solution): Could not parse integer from parts for key {key}. Parts: {parts}")
+                    except IndexError:
+                        # This should be caught by len(parts) >= 4, but as a safeguard
+                        print(f"Warning (_format_solution): IndexError while parsing key {key}. Parts: {parts}")
+                else:
+                    print(f"Warning (_format_solution): Key {key} does not have enough parts after splitting.")
+            # else:
+                # Optionally log other variables if needed for debugging, e.g.:
+                # if not key.startswith("MatchupRoomTime_") and value != 0:
+                #    print(f"Debug (_format_solution): Ignored variable {key} with value {value}")
+
         df = pd.DataFrame(data, columns=["TimeSlot", "Room", "Matchup"])
-        df.sort_values(["TimeSlot", "Room"], inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        if not df.empty:
+            df.sort_values(["TimeSlot", "Room"], inplace=True)
+            df.reset_index(drop=True, inplace=True)
         return df
 
     def _check_team_conflicts(self, df_schedule: pd.DataFrame) -> bool:
