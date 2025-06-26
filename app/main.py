@@ -36,7 +36,9 @@ async def read_index():
 async def generate_matchups(request: MatchupsRequest) -> MatchupsResponse:
     try:
         matchups_solver = MatchupSolver(
-            n_teams=request.n_teams, n_matches_per_team=request.n_matches_per_team
+            n_teams=request.n_teams,
+            n_matches_per_team=request.n_matches_per_team,
+            tournament_type=request.tournament_type # Pass tournament_type
         )
 
         all_possible_matchups = matchups_solver.generate_all_possible_matchups()
@@ -76,6 +78,7 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
             n_teams=request.n_teams,
             n_matches_per_team=request.n_matches_per_team,
             n_matchup_solutions=1,
+            tournament_type=request.tournament_type # Ensure tournament_type is passed here
         )
         matchups_response = await generate_matchups(request=matchups_request)
 

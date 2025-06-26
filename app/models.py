@@ -8,6 +8,11 @@ class MatchupsRequest(BaseModel):
     n_matchup_solutions: int = Field(
         2, description="Number of matchup solutions to generate", example=2
     )
+    tournament_type: str = Field(
+        "international",
+        description="Type of tournament for matchup generation: 'international' or 'district'. Affects opponent frequency constraints.",
+        example="district"
+    )
 
 
 class Matchup(BaseModel):

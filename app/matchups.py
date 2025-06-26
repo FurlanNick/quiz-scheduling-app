@@ -6,9 +6,10 @@ import numpy as np
 
 
 class MatchupSolver:
-    def __init__(self, n_teams: int, n_matches_per_team: int):
+    def __init__(self, n_teams: int, n_matches_per_team: int, tournament_type: str = "international"):
         self.n_teams = n_teams
         self.n_matches_per_team = n_matches_per_team
+        self.tournament_type = tournament_type # Store tournament type
 
     def generate_all_possible_matchups(self) -> List[Tuple[int, int, int]]:
         teams = list(range(1, self.n_teams + 1))
@@ -93,27 +94,58 @@ class MatchupSolver:
 
         # Pairwise opponent check
         if self.n_teams >= 2:
-            if self.n_teams - 1 == 0: # Should be caught by _validate_inputs (n_teams >=3)
-                lambda_float = 0
-            else:
-                lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+            expected_min_meetings_check = 0
+            # For District, max is not strictly checked here beyond what other constraints impose.
+            # For International, it's ceil(lambda).
+            expected_max_meetings_check = float('inf')
+            lambda_log_str = "N/A"
 
-            lower_bound_meetings = math.floor(lambda_float)
-            upper_bound_meetings = math.ceil(lambda_float)
+            if self.tournament_type == "district":
+                if self.n_matches_per_team > 0:
+                    expected_min_meetings_check = 1
+                # For District, the check is only concerned with meeting at least once.
+                lambda_log_str = ">= 1 (District)"
+            else:  # International mode or default
+                if self.n_teams - 1 > 0:
+                    lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+                    expected_min_meetings_check = math.floor(lambda_float)
+                    expected_max_meetings_check = math.ceil(lambda_float)
+                    lambda_log_str = f"~{lambda_float:.2f} (Intl)"
+                else: # Should ideally not be reached due to n_teams >= 3 validation
+                    expected_min_meetings_check = 0
+                    expected_max_meetings_check = 0
+
+                if self.n_matches_per_team == 0: # If no matches, no meetings expected
+                    expected_min_meetings_check = 0
+                    expected_max_meetings_check = 0
 
             for team1 in range(1, self.n_teams + 1):
                 for team2 in range(team1 + 1, self.n_teams + 1):
                     actual_meetings = 0
-                    for match_tuple in solution: # solution is a list/array of tuples
+                    for match_tuple in solution:  # solution is a np.array of matchups
                         if team1 in match_tuple and team2 in match_tuple:
                             actual_meetings += 1
 
-                    if not (lower_bound_meetings <= actual_meetings <= upper_bound_meetings):
-                        print(
-                            f"Pair ({team1}, {team2}) met {actual_meetings} times, "
-                            f"expected between {lower_bound_meetings} and {upper_bound_meetings} (lambda={lambda_float:.2f})."
-                        )
+                    passes_check = False
+                    if self.tournament_type == "district":
+                        if actual_meetings >= expected_min_meetings_check:
+                            passes_check = True
+                    else: # International
+                        if expected_min_meetings_check <= actual_meetings <= expected_max_meetings_check:
+                            passes_check = True
+
+                    if not passes_check:
                         is_solution = False
+                        if self.tournament_type == "district":
+                            print(
+                                f"Pair ({team1}, {team2}) met {actual_meetings} times. For District mode, "
+                                f"expected >= {expected_min_meetings_check}."
+                            )
+                        else: # International
+                            print(
+                                f"Pair ({team1}, {team2}) met {actual_meetings} times. For International mode, "
+                                f"expected between {expected_min_meetings_check} and {expected_max_meetings_check} (lambda: {lambda_log_str})."
+                            )
 
         print(f"Valid Matchups?: {is_solution}")
         print()
@@ -192,26 +224,46 @@ class MatchupSolver:
 
         # Calculate lambda (average number of times pairs meet)
         # self.n_teams - 1 will not be zero due to _validate_inputs (n_teams >= 3)
-        lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
 
-        lower_bound_meetings = math.floor(lambda_float)
-        upper_bound_meetings = math.ceil(lambda_float)
+        if self.tournament_type == "district":
+            # For District mode, ensure each pair meets at least once. No upper bound from this constraint.
+            lower_bound_meetings = 0
+            if self.n_matches_per_team > 0 and self.n_teams > 1: # Need at least 2 teams to form a pair
+                lower_bound_meetings = 1
 
-        # Ensure that if matches are played, teams meet at least once if lambda is low but positive.
-        # Example: n_teams=10, n_matches_per_team=3. lambda = 6/9 = 0.66. floor=0, ceil=1.
-        # This allows pairs to meet 0 or 1 times.
-        # User requirement: "Each Team needs to quiz against a new team first." (implies at least once)
-        # This is hard to enforce strictly for *all pairs* if lambda < 1.
-        # The current floor/ceil approach distributes meetings as evenly as possible.
-        # If n_matches_per_team = 0, then lambda_float = 0, lb=0, ub=0. Correct.
+            if lower_bound_meetings > 0: # Only add constraint if it's meaningful
+                for team1 in range(1, self.n_teams + 1):
+                    for team2 in range(team1 + 1, self.n_teams + 1):
+                        sum_matchups_for_pair = pulp.lpSum(
+                            variables[i] for i, M in enumerate(matchups) if team1 in M and team2 in M
+                        )
+                        problem += sum_matchups_for_pair >= lower_bound_meetings, \
+                                   f"DistrictOpponentMinMet_T{team1}_T{team2}"
+            # No explicit upper bound constraint for District mode here. Max meetings implicitly handled by total matches.
 
-        for team1 in range(1, self.n_teams + 1):
-            for team2 in range(team1 + 1, self.n_teams + 1):
-                sum_matchups_for_pair = pulp.lpSum(
-                    variables[i] for i, M in enumerate(matchups) if team1 in M and team2 in M
-                )
-                problem += sum_matchups_for_pair >= lower_bound_meetings
-                problem += sum_matchups_for_pair <= upper_bound_meetings
+        else: # International mode or default
+            # Use lambda-based floor/ceil for both lower and upper bounds for more even distribution
+            lambda_float = 0.0 # Default if n_teams <= 1, though validated n_teams >= 3
+            if self.n_teams - 1 > 0:
+                 lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+
+            lower_bound_meetings = math.floor(lambda_float)
+            upper_bound_meetings = math.ceil(lambda_float)
+
+            # If no matches are to be played, bounds should be 0
+            if self.n_matches_per_team == 0:
+                lower_bound_meetings = 0
+                upper_bound_meetings = 0
+
+            for team1 in range(1, self.n_teams + 1):
+                for team2 in range(team1 + 1, self.n_teams + 1):
+                    sum_matchups_for_pair = pulp.lpSum(
+                        variables[i] for i, M in enumerate(matchups) if team1 in M and team2 in M
+                    )
+                    problem += sum_matchups_for_pair >= lower_bound_meetings, \
+                               f"InternationalOpponentMinMet_T{team1}_T{team2}"
+                    problem += sum_matchups_for_pair <= upper_bound_meetings, \
+                               f"InternationalOpponentMaxMet_T{team1}_T{team2}"
         return problem
 
     def _validate_inputs(self):
