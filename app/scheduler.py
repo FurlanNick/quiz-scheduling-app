@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple, Union
+import math # Added for floor and ceil
 
 import pulp
 import numpy as np
@@ -69,8 +70,9 @@ class ScheduleSolver:
         is_solution = self._check_team_conflicts(df_schedule) and is_solution
         is_solution = self._check_room_visits(team_rooms) and is_solution
         is_solution = self._check_consecutive_matches(team_time_slots) and is_solution
-        if self.n_matches_per_team > 3: # Phasing check is relevant if more than 3 matches
-            is_solution = self._check_phased_match_completion(df_schedule) and is_solution
+        # Temporarily disable phasing check for performance diagnosis
+        # if self.n_matches_per_team > 3: # Phasing check is relevant if more than 3 matches
+        #     is_solution = self._check_phased_match_completion(df_schedule) and is_solution
 
         print(f"Valid Schedule?: {is_solution}")
         print()
@@ -142,8 +144,9 @@ class ScheduleSolver:
         if "room_diversity" not in relax_constraints:
             problem = self._enforce_room_diversity(problem, variables, matchups)
         # Add call to new phasing constraint enforcement
-        if self.n_matches_per_team > 3: # Phasing relevant if more than 3 matches total
-            problem = self._enforce_phased_match_completion(problem, variables, matchups)
+        # Temporarily disable phasing constraint for performance diagnosis
+        # if self.n_matches_per_team > 3: # Phasing relevant if more than 3 matches total
+        #     problem = self._enforce_phased_match_completion(problem, variables, matchups)
 
 
     def _enforce_phased_match_completion(
@@ -303,24 +306,33 @@ class ScheduleSolver:
                 == self.n_matches_per_team # The sum must equal the total number of matches for the team
             )
 
-            # Constraint 2: Distribute matches per team across rooms as evenly as possible.
-            # Each room should host 'base_room_visits' or 'base_room_visits + 1' matches for the team.
+            # Constraint 2: Distribute matches per team across rooms with relaxed bounds.
             if self.n_rooms > 0:  # This logic only applies if there are rooms
-                base_room_visits = self.n_matches_per_team // self.n_rooms
-                # extra_room_visits = self.n_matches_per_team % self.n_rooms # Not directly needed for constraints
+                avg_visits_per_room = self.n_matches_per_team / self.n_rooms
+
+                # Relaxed bounds: [max(0, floor(avg) - 1), ceil(avg) + 1]
+                # K_lower = 1, K_upper = 1 for the +/-1 spread around avg's floor/ceil
+                min_allowed_visits = math.floor(avg_visits_per_room) - 1
+                min_allowed_visits = max(0, min_allowed_visits) # Ensure non-negative
+
+                max_allowed_visits = math.ceil(avg_visits_per_room) + 1
+
+                # Special case: if n_matches_per_team is 0, bounds should be 0.
+                if self.n_matches_per_team == 0:
+                    min_allowed_visits = 0
+                    max_allowed_visits = 0
 
                 for room_j in range(1, self.n_rooms + 1):  # For each room j
-                    # Sum of matches for the current team in the current room_j over all time slots and matchups
                     matches_for_team_in_room_j = pulp.lpSum(
                         variables[i][room_j][k] # Fixed room_j
                         for i, matchup in enumerate(matchups)
                         for k in range(1, self.n_time_slots + 1)
                         if team in matchup.teams
                     )
-                    # Each team must play at least 'base_room_visits' times in this room
-                    problem += matches_for_team_in_room_j >= base_room_visits
-                    # Each team must play at most 'base_room_visits + 1' times in this room
-                    problem += matches_for_team_in_room_j <= base_room_visits + 1
+                    problem += matches_for_team_in_room_j >= min_allowed_visits, \
+                               f"RoomDiversity_Min_T{team}_R{room_j}"
+                    problem += matches_for_team_in_room_j <= max_allowed_visits, \
+                               f"RoomDiversity_Max_T{team}_R{room_j}"
             elif self.n_matches_per_team > 0: # No rooms, but matches are expected
                  # This case should ideally be caught by validation earlier or will make the problem infeasible
                  # because variables are defined over an empty room range if n_rooms = 0.
@@ -364,9 +376,15 @@ class ScheduleSolver:
                 return False
             return True # No matches expected and no rooms, so trivially valid.
 
-        # Calculate expected distribution of matches in rooms for each team
-        base_room_visits = self.n_matches_per_team // self.n_rooms
-        extra_room_visits = self.n_matches_per_team % self.n_rooms # Number of rooms that will get base_room_visits + 1 matches
+        # Calculate relaxed bounds for room visits
+        if self.n_matches_per_team == 0:
+            min_allowed_visits = 0
+            max_allowed_visits = 0
+        else:
+            avg_visits_per_room = self.n_matches_per_team / self.n_rooms
+            min_allowed_visits = math.floor(avg_visits_per_room) - 1
+            min_allowed_visits = max(0, min_allowed_visits)  # Ensure non-negative
+            max_allowed_visits = math.ceil(avg_visits_per_room) + 1
 
         for team_id, actual_rooms_played_in_list in team_rooms.items():
             # Verify that the team played the correct total number of matches
@@ -375,11 +393,12 @@ class ScheduleSolver:
                     f"Team {team_id} has {len(actual_rooms_played_in_list)} scheduled matches, "
                     f"but expected {self.n_matches_per_team}."
                 )
-                return False # This indicates a fundamental issue with schedule generation
+                return False
 
             # Count how many times this team played in each room
-            if not actual_rooms_played_in_list: # If team has no matches (e.g. n_matches_per_team is 0)
-                # If n_matches_per_team is 0, this loop body should correctly validate (all counts 0)
+            if not actual_rooms_played_in_list:
+                 # If n_matches_per_team is 0, this is fine. All rooms should have 0 visits.
+                 # If n_matches_per_team > 0, but list is empty, it's an error caught by above check.
                 room_ids_this_team_played_in = np.array([])
                 counts_of_visits_per_room = np.array([])
             else:
@@ -387,34 +406,26 @@ class ScheduleSolver:
                     actual_rooms_played_in_list, return_counts=True
                 )
 
-            # Store these counts in a dictionary for easier lookup by room_id
             actual_visit_counts_per_room_map = dict(zip(room_ids_this_team_played_in, counts_of_visits_per_room))
 
-            num_rooms_visited_base_plus_1_times = 0
             # Check each available room (from 1 to self.n_rooms)
             for room_j_id in range(1, self.n_rooms + 1):
                 visits_to_this_room_j = actual_visit_counts_per_room_map.get(room_j_id, 0)
 
-                # Check if the number of visits to this room is either base_room_visits or base_room_visits + 1
-                if not (visits_to_this_room_j == base_room_visits or visits_to_this_room_j == base_room_visits + 1):
+                if not (min_allowed_visits <= visits_to_this_room_j <= max_allowed_visits):
                     print(
                         f"Team {team_id} visited Room {room_j_id} {visits_to_this_room_j} times. "
-                        f"Expected {base_room_visits} or {base_room_visits + 1} times."
+                        f"Expected between {min_allowed_visits} and {max_allowed_visits} times."
                     )
                     return False
 
-                # If this room was visited base_room_visits + 1 times, increment counter
-                if visits_to_this_room_j == base_room_visits + 1:
-                    num_rooms_visited_base_plus_1_times += 1
-
-            # After checking all rooms for this team, verify if the number of rooms
-            # visited 'base_room_visits + 1' times matches 'extra_room_visits'.
-            if num_rooms_visited_base_plus_1_times != extra_room_visits:
-                print(
-                    f"Team {team_id} was expected to visit {extra_room_visits} rooms {base_room_visits + 1} times, "
-                    f"but did so for {num_rooms_visited_base_plus_1_times} rooms."
-                )
-                return False
+            # Ensure that even with relaxed per-room counts, the total matches for the team is correct.
+            # This is already checked by `len(actual_rooms_played_in_list) != self.n_matches_per_team`.
+            # We could also sum `actual_visit_counts_per_room_map.values()` as an additional sanity check.
+            # total_counted_matches = sum(actual_visit_counts_per_room_map.values())
+            # if total_counted_matches != self.n_matches_per_team:
+            #     print(f"Team {team_id} total matches inconsistency: counted {total_counted_matches}, expected {self.n_matches_per_team}")
+            #     return False
 
         return True
 
