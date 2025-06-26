@@ -66,10 +66,12 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
             n_teams=request.n_teams,
             n_matches_per_team=request.n_matches_per_team,
             n_rooms=request.n_rooms,
-            n_time_slots=request.n_time_slots,
-            tournament_type=request.tournament_type # Pass tournament_type
+            # n_time_slots is now calculated internally by ScheduleSolver
+            tournament_type=request.tournament_type,
+            phase_buffer_slots=request.phase_buffer_slots, # Pass new buffer params
+            international_buffer_slots=request.international_buffer_slots # Pass new buffer params
         )
-        # MatchupsRequest does not need tournament_type, it's for ScheduleSolver
+        # MatchupsRequest does not need tournament_type or buffer slots
         matchups_request = MatchupsRequest(
             n_teams=request.n_teams,
             n_matches_per_team=request.n_matches_per_team,
@@ -92,8 +94,13 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
 
                 # Transform DataFrame for grid display
                 grid_data = {}
-                max_sched_ts = 0
-                max_sched_room = 0
+                # max_sched_ts is now determined by the solver's calculated n_time_slots
+                # max_sched_room is still determined by iterating through the actual schedule data
+                # or could also be self.n_rooms from the solver if we assume all rooms up to n_rooms might be used.
+                # For now, let's keep max_sched_room based on actual data, and max_sched_ts from calculated.
+
+                actual_max_room_in_schedule = 0
+                actual_max_ts_in_schedule = 0 # To see if schedule uses fewer slots than calculated
 
                 if not schedule.empty:
                     for _, row in schedule.iterrows():
@@ -101,8 +108,8 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
                         room = int(row["Room"])
                         teams_in_match = list(row["Matchup"].teams) # (T_seat1, T_seat2, T_seat3)
 
-                        max_sched_ts = max(max_sched_ts, ts)
-                        max_sched_room = max(max_sched_room, room)
+                        actual_max_ts_in_schedule = max(actual_max_ts_in_schedule, ts)
+                        actual_max_room_in_schedule = max(actual_max_room_in_schedule, room)
 
                         ts_key = f"ts_{ts}"
                         room_key = f"room_{room}"
@@ -120,10 +127,15 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
                     schedule=schedule_items,
                     constraints_relaxed=constraints_relaxed,
                     grid_schedule=grid_data,
-                    max_sched_timeslot=max_sched_ts,
-                    max_sched_room=max_sched_room
+                    max_sched_timeslot=schedule_solver.n_time_slots, # Use calculated total n_time_slots
+                    max_sched_room=actual_max_room_in_schedule if not schedule.empty else request.n_rooms
+                                      # Use actual max room from schedule, or input n_rooms if schedule is empty but valid
                 )
-        raise HTTPException(status_code=404, detail="No valid schedule found")
+        # If loop completes without returning a schedule (e.g. matchups_response was empty)
+        raise HTTPException(status_code=404, detail="No valid matchups found to generate a schedule.")
+    except ValueError as ve: # Catch specific validation errors from scheduler
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(ve)) # Return as Bad Request
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

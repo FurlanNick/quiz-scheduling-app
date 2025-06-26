@@ -22,12 +22,24 @@ class ScheduleRequest(BaseModel):
     n_teams: int = Field(30, description="Number of teams participating", example=30)
     n_matches_per_team: int = Field(3, description="Number of matches each team plays", example=3)
     n_rooms: int = Field(5, description="Number of available rooms for matches", example=5)
-    n_time_slots: int = Field(6, description="Number of time slots for scheduling", example=6)
+    # n_time_slots: int = Field(6, description="Number of time slots for scheduling", example=6) # Removed
     # For future, consider: from typing import Literal; tournament_type: Literal['international', 'district']
     tournament_type: str = Field(
         "international",
         description="Type of tournament: 'international' or 'district'. Determines scheduling rules.",
         example="district"
+    )
+    phase_buffer_slots: int = Field(
+        2,
+        description="Buffer slots to add to each calculated active phase (District mode only). Helps ensure solvability with strict phase quotas.",
+        ge=0,
+        le=10 # Max 10 buffer slots per phase seems reasonable
+    )
+    international_buffer_slots: int = Field(
+        5,
+        description="Overall buffer slots to add to theoretical minimum (International mode only).",
+        ge=0,
+        le=30 # Max 30 buffer slots overall seems reasonable
     )
 
 

@@ -5,8 +5,10 @@ async function submitForm(event) {
     const n_teams = document.getElementById('n_teams').value;
     const n_matches_per_team = document.getElementById('n_matches_per_team').value;
     const n_rooms = document.getElementById('n_rooms').value;
-    const n_time_slots = document.getElementById('n_time_slots').value;
-    const tournament_type = document.getElementById('tournament_type').value; // Get tournament type
+    // const n_time_slots = document.getElementById('n_time_slots').value; // Removed
+    const tournament_type = document.getElementById('tournament_type').value;
+    const phase_buffer_slots = document.getElementById('phase_buffer_slots').value;
+    const international_buffer_slots = document.getElementById('international_buffer_slots').value;
 
     // Show the loading spinner
     document.getElementById('spinner').style.display = 'block';
@@ -23,8 +25,10 @@ async function submitForm(event) {
                 n_teams: parseInt(n_teams),
                 n_matches_per_team: parseInt(n_matches_per_team),
                 n_rooms: parseInt(n_rooms),
-                n_time_slots: parseInt(n_time_slots),
-                tournament_type: tournament_type // Add tournament type to payload
+                // n_time_slots: parseInt(n_time_slots), // Removed
+                tournament_type: tournament_type,
+                phase_buffer_slots: parseInt(phase_buffer_slots),
+                international_buffer_slots: parseInt(international_buffer_slots)
             })
         });
 
