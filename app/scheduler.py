@@ -70,9 +70,9 @@ class ScheduleSolver:
         is_solution = self._check_team_conflicts(df_schedule) and is_solution
         is_solution = self._check_room_visits(team_rooms) and is_solution
         is_solution = self._check_consecutive_matches(team_time_slots) and is_solution
-        # Temporarily disable phasing check for performance diagnosis
-        # if self.n_matches_per_team > 3: # Phasing check is relevant if more than 3 matches
-        #     is_solution = self._check_phased_match_completion(df_schedule) and is_solution
+        # Re-enabling phasing check
+        if self.n_matches_per_team > 3: # Phasing check is relevant if more than 3 matches
+            is_solution = self._check_phased_match_completion(df_schedule) and is_solution
 
         print(f"Valid Schedule?: {is_solution}")
         print()
@@ -144,9 +144,9 @@ class ScheduleSolver:
         if "room_diversity" not in relax_constraints:
             problem = self._enforce_room_diversity(problem, variables, matchups)
         # Add call to new phasing constraint enforcement
-        # Temporarily disable phasing constraint for performance diagnosis
-        # if self.n_matches_per_team > 3: # Phasing relevant if more than 3 matches total
-        #     problem = self._enforce_phased_match_completion(problem, variables, matchups)
+        # Re-enabling phasing constraint
+        if self.n_matches_per_team > 3: # Phasing relevant if more than 3 matches total
+            problem = self._enforce_phased_match_completion(problem, variables, matchups)
 
 
     def _enforce_phased_match_completion(
