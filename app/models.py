@@ -23,6 +23,12 @@ class ScheduleRequest(BaseModel):
     n_matches_per_team: int = Field(3, description="Number of matches each team plays", example=3)
     n_rooms: int = Field(5, description="Number of available rooms for matches", example=5)
     n_time_slots: int = Field(6, description="Number of time slots for scheduling", example=6)
+    # For future, consider: from typing import Literal; tournament_type: Literal['international', 'district']
+    tournament_type: str = Field(
+        "international",
+        description="Type of tournament: 'international' or 'district'. Determines scheduling rules.",
+        example="district"
+    )
 
 
 class ScheduleItem(BaseModel):

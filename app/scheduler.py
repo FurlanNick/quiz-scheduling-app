@@ -8,11 +8,12 @@ from app.models import Matchup
 
 
 class ScheduleSolver:
-    def __init__(self, n_teams: int, n_matches_per_team: int, n_rooms: int, n_time_slots: int):
+    def __init__(self, n_teams: int, n_matches_per_team: int, n_rooms: int, n_time_slots: int, tournament_type: str = "international"):
         self.n_teams = n_teams
         self.n_matches_per_team = n_matches_per_team
         self.n_rooms = n_rooms
         self.n_time_slots = n_time_slots
+        self.tournament_type = tournament_type # Store tournament type
 
     def schedule_matches(self, matchups: List[Matchup]) -> Union[pd.DataFrame, List[str]]:
         constraints_relaxed = []
@@ -70,60 +71,150 @@ class ScheduleSolver:
         is_solution = self._check_team_conflicts(df_schedule) and is_solution
         is_solution = self._check_room_visits(team_rooms) and is_solution
         is_solution = self._check_consecutive_matches(team_time_slots) and is_solution
-        # Re-enabling phasing check
-        if self.n_matches_per_team > 3: # Phasing check is relevant if more than 3 matches
-            is_solution = self._check_phased_match_completion(df_schedule) and is_solution
+
+        # Conditionally call the new check for periodic breaks and quotas
+        CHUNK_SIZE_FOR_BREAKS = 3 # Must be same as in enforcement
+        if self.tournament_type == "district" and self.n_matches_per_team > CHUNK_SIZE_FOR_BREAKS:
+            # Calculate num_breaks to see if the check is relevant for periodic breaks
+            num_phases_check = math.ceil(self.n_matches_per_team / CHUNK_SIZE_FOR_BREAKS)
+            num_breaks_check = num_phases_check - 1 if num_phases_check > 1 else 0
+            if num_breaks_check > 0: # Only check if breaks were intended to be scheduled
+                 is_solution = self._check_periodic_breaks_and_quotas(df_schedule, CHUNK_SIZE_FOR_BREAKS) and is_solution
+
+        # The original _check_phased_match_completion (Big-M dynamic phasing) remains disabled/removed.
+        # If you want to keep its structure for other types of phasing checks, you can rename it
+        # or ensure it's not called unless that specific (Big-M) logic is active.
+        # For now, the call to _check_phased_match_completion is removed as its enforcement part is disabled.
 
         print(f"Valid Schedule?: {is_solution}")
         print()
         return is_solution
 
-    def _check_phased_match_completion(self, df_schedule: pd.DataFrame) -> bool:
-        """
-        Checks if all teams complete 3 matches before any team starts their 4th match.
-        """
-        CHUNK_SIZE = 3
-        # Create a structure to hold matches played per team up to each timeslot
-        # matches_at_ts[ts][team_id] = count
-        matches_up_to_ts = {ts: {t: 0 for t in range(1, self.n_teams + 1)} for ts in range(self.n_time_slots + 1)}
+    # The _check_phased_match_completion method (for Big-M style dynamic phasing) is now effectively disabled
+    # as its enforcement counterpart is disabled. If needed for a different type of check, it would
+    # require significant rework or careful conditional calling. For now, it's dormant.
+    # def _check_phased_match_completion(self, df_schedule: pd.DataFrame) -> bool: ...
 
-        # Populate matches_up_to_ts based on the schedule
-        # df_schedule is sorted by TimeSlot, then Room
+    def _check_periodic_breaks_and_quotas(self, df_schedule: pd.DataFrame, chunk_size: int) -> bool:
+        """
+        Checks if designated break time slots are empty and if teams meet match quotas by phase ends
+        for the 'district' tournament type.
+        This logic must mirror the calculations in _enforce_periodic_breaks_and_phase_quotas.
+        """
+        if self.n_matches_per_team == 0:
+            return True
+
+        num_phases = math.ceil(self.n_matches_per_team / chunk_size)
+        num_breaks = num_phases - 1 if num_phases > 1 else 0
+
+        if num_breaks == 0: # No breaks means no specific quotas at break points to check by this method
+            return True
+
+        # Recalculate break schedule (must be identical to enforcement logic)
+        # This calculation needs to be robust and identical to the one in _enforce_periodic_breaks_and_phase_quotas
+        total_active_slots_for_play = self.n_time_slots - num_breaks
+
+        # Basic validation (if these fail, problem setup was flawed, but check might still run)
+        if total_active_slots_for_play < num_phases or \
+           (total_active_slots_for_play <= 0 and self.n_matches_per_team > 0):
+            print(f"Warning (Check Logic): Insufficient total active slots ({total_active_slots_for_play}) for {num_phases} phases. Cannot reliably check quotas.")
+            return False # Or True, if we decide this implies setup error not a schedule error by this check
+
+        active_slots_per_phase_counts = [(total_active_slots_for_play // num_phases) for _ in range(num_phases)]
+        for i in range(total_active_slots_for_play % num_phases):
+            active_slots_per_phase_counts[i] += 1
+
+        break_slot_indices = []
+        end_of_phase_active_slot_indices = []
+        current_model_timeslot_cursor = 0
+
+        for p in range(num_phases):
+            matches_this_phase = chunk_size if p < num_phases - 1 else self.n_matches_per_team - (p * chunk_size)
+            min_slots_theoretically_needed = 0
+            if self.n_rooms > 0:
+                 min_slots_theoretically_needed = math.ceil((self.n_teams * matches_this_phase) / (3 * self.n_rooms))
+
+            if active_slots_per_phase_counts[p] < min_slots_theoretically_needed:
+                print(f"Warning (Check Logic): Phase {p+1} allocated {active_slots_per_phase_counts[p]} slots, "
+                      f"theoretically needs {min_slots_theoretically_needed}. Quota check might be problematic.")
+                # This indicates a setup issue that should have been caught by validation in enforce.
+                # If we proceed, it's to check what the solver did despite potentially impossible constraints.
+                pass
+
+            current_model_timeslot_cursor += active_slots_per_phase_counts[p]
+            end_of_phase_active_slot_indices.append(current_model_timeslot_cursor)
+
+            if p < num_breaks:
+                current_model_timeslot_cursor += 1
+                if current_model_timeslot_cursor <= self.n_time_slots : # Ensure break slot is within total timeslots
+                    break_slot_indices.append(current_model_timeslot_cursor)
+
+        if current_model_timeslot_cursor > self.n_time_slots:
+            print(f"Warning (Check Logic): Calculated structure ({current_model_timeslot_cursor} slots) exceeds total timeslots ({self.n_time_slots}).")
+            # This implies an issue with slot calculation consistency or that the schedule is fundamentally flawed.
+            # For the check, we can only validate up to n_time_slots.
+            # We might need to adjust how end_of_phase_active_slot_indices and break_slot_indices are used if this happens.
+            # For now, assume this implies a problem that should have been caught earlier or means the schedule is invalid.
+            # It's safer to return False if the calculated structure doesn't fit n_time_slots, as quota checks will be off.
+            return False
+
+
+        # 1. Verify break slots are empty
+        for ts_break in break_slot_indices:
+            # Ensure ts_break is a valid timeslot index for df_schedule
+            if 1 <= ts_break <= self.n_time_slots:
+                if not df_schedule[df_schedule.TimeSlot == ts_break].empty:
+                    print(f"Validation Error (Periodic Breaks): Break time slot {ts_break} is not empty.")
+                    return False
+            else: # Should not happen if cursor logic is correct and validated
+                print(f"Warning (Check Logic): Calculated break slot {ts_break} is out of bounds ({self.n_time_slots}).")
+
+
+        # 2. Verify phase quotas
+        # Reconstruct cumulative matches from df_schedule
+        actual_matches_played = {team_id: [0] * (self.n_time_slots + 1) for team_id in range(1, self.n_teams + 1)}
         for _, row in df_schedule.iterrows():
-            current_ts = row["TimeSlot"]
-            matchup_teams = row["Matchup"].teams
-            for team_id in matchup_teams:
-                # Increment count for this team for all timeslots from current_ts onwards
-                for ts_iter in range(current_ts, self.n_time_slots + 1):
-                    matches_up_to_ts[ts_iter][team_id] += 1
+            ts = row["TimeSlot"]
+            for team_id in row["Matchup"].teams:
+                if 1 <= ts <= self.n_time_slots and 1 <= team_id <= self.n_teams: # Boundary checks
+                    actual_matches_played[team_id][ts] += 1
 
-        # Check the phasing rule
-        for ts_check in range(1, self.n_time_slots + 1): # For each timeslot where a 4th match could start
-            for t1 in range(1, self.n_teams + 1):
-                # Did team t1 start its (CHUNK_SIZE + 1)-th match in this timeslot (ts_check)?
-                # Matches at end of previous timeslot (ts_check - 1)
-                matches_t1_before_ts_check = matches_up_to_ts[ts_check - 1][t1] if ts_check > 0 else 0
-                # Matches at end of current timeslot (ts_check)
-                matches_t1_at_ts_check = matches_up_to_ts[ts_check][t1]
+        # Convert to cumulative sums
+        for team_id in range(1, self.n_teams + 1):
+            for ts in range(1, self.n_time_slots + 1):
+                actual_matches_played[team_id][ts] += actual_matches_played[team_id][ts-1]
 
-                if matches_t1_before_ts_check == CHUNK_SIZE and matches_t1_at_ts_check == CHUNK_SIZE + 1:
-                    # Team t1 is starting its (CHUNK_SIZE + 1)-th match in timeslot ts_check.
-                    # Now, check all other teams t2.
-                    for t2 in range(1, self.n_teams + 1):
-                        if t1 == t2:
-                            continue
+        for p in range(num_phases):
+            target_cumulative_quota = min((p + 1) * chunk_size, self.n_matches_per_team)
+            slot_to_check_quota_at = end_of_phase_active_slot_indices[p]
 
-                        # Team t2 must have completed CHUNK_SIZE matches by the end of ts_check -1
-                        # (i.e., before t1 started its CHUNK_SIZE + 1 -th match).
-                        matches_t2_before_ts_check = matches_up_to_ts[ts_check - 1][t2] if ts_check > 0 else 0
-                        if matches_t2_before_ts_check < CHUNK_SIZE:
-                            print(
-                                f"Phasing Violation: Team {t1} started its {CHUNK_SIZE + 1}-th match in timeslot {ts_check}, "
-                                f"but team {t2} had only completed {matches_t2_before_ts_check} matches "
-                                f"(expected at least {CHUNK_SIZE}) by the end of timeslot {ts_check -1 }."
-                            )
-                            return False
+            if 1 <= slot_to_check_quota_at <= self.n_time_slots: # Ensure slot is valid
+                for team_id in range(1, self.n_teams + 1):
+                    observed_matches = actual_matches_played[team_id][slot_to_check_quota_at]
+                    if observed_matches != target_cumulative_quota:
+                        print(
+                            f"Validation Error (Phase Quota): Team {team_id} at end of phase {p + 1} "
+                            f"(Timeslot {slot_to_check_quota_at}) has {observed_matches} matches, expected {target_cumulative_quota}."
+                        )
+                        return False
+            elif p < num_phases -1 : # Only a critical error if it's not the very final phase end potentially truncated by n_time_slots
+                 print(f"Warning (Check Logic): Slot to check quota ({slot_to_check_quota_at}) for phase {p+1} is out of bounds ({self.n_time_slots}).")
+                 # This would be a problem if quota isn't met by n_time_slots for the final phase.
+
+        # Final check: ensure total matches are met by the end of all available time slots
+        # This is already covered by the existing _enforce_room_diversity's first constraint and its check.
+        # No, that check is on team_rooms which is just a list of rooms, not timed.
+        # The specific check for total matches is in MatchupSolver.check_matchups.
+        # Here, we can add a redundant check for total matches by self.n_time_slots
+        for team_id in range(1, self.n_teams + 1):
+            if actual_matches_played[team_id][self.n_time_slots] != self.n_matches_per_team:
+                print(
+                    f"Validation Error (Total Matches): Team {team_id} has {actual_matches_played[team_id][self.n_time_slots]} total matches, "
+                    f"expected {self.n_matches_per_team} by end of schedule."
+                )
+                return False
         return True
+
 
     def enforce_constraints(
         self,
@@ -144,80 +235,131 @@ class ScheduleSolver:
         if "room_diversity" not in relax_constraints:
             problem = self._enforce_room_diversity(problem, variables, matchups)
         # Add call to new phasing constraint enforcement
-        # Re-enabling phasing constraint
-        if self.n_matches_per_team > 3: # Phasing relevant if more than 3 matches total
-            problem = self._enforce_phased_match_completion(problem, variables, matchups)
+        # The Big-M dynamic phasing (_enforce_phased_match_completion) remains disabled due to performance.
+        # Instead, call the new periodic breaks logic if tournament_type is 'district'.
+        CHUNK_SIZE_FOR_BREAKS = 3 # Define chunk size for periodic breaks
+        if self.tournament_type == "district" and self.n_matches_per_team > CHUNK_SIZE_FOR_BREAKS:
+            problem = self._enforce_periodic_breaks_and_phase_quotas(problem, variables, matchups, CHUNK_SIZE_FOR_BREAKS)
+        # The original _enforce_phased_match_completion (Big-M) should be removed or kept commented out.
+        # For clarity, I am ensuring it's not called. The plan was to keep it disabled.
 
+    # _enforce_phased_match_completion (Big-M version) is intentionally kept disabled/removed.
 
-    def _enforce_phased_match_completion(
+    def _enforce_periodic_breaks_and_phase_quotas(
         self,
         problem: pulp.LpProblem,
         variables: pulp.LpVariable,
         matchups: List[Matchup],
+        chunk_size: int
     ):
-        CHUNK_SIZE = 3
-        BIG_M = self.n_matches_per_team + 1 # A sufficiently large number
+        if self.n_matches_per_team == 0 :
+            return problem
 
-        # Auxiliary variables: matches_played[team][timeslot]
-        # Stores cumulative matches played by team 't' up to and including timeslot 'ts'.
+        num_phases = math.ceil(self.n_matches_per_team / chunk_size)
+        num_breaks = num_phases - 1 if num_phases > 1 else 0
+
+        if num_breaks == 0:
+            # No breaks needed (e.g., <= chunk_size matches total, or only one phase)
+            # We still need to ensure all teams play n_matches_per_team by the end
+            # This is typically handled by _enforce_room_diversity's first constraint
+            # but let's ensure matches_played_to_ts is defined for consistency if other parts rely on it.
+            # However, if no breaks, this specific method's core logic isn't triggered.
+            # For safety, define matches_played_to_ts if it might be used by a check function later.
+            # Or, the check function should also know if num_breaks == 0.
+            # For now, returning early if no breaks are part of this specific logic.
+            return problem
+
+        total_active_slots_for_play = self.n_time_slots - num_breaks
+        if total_active_slots_for_play < num_phases:
+            raise ValueError(
+                f"Not enough total time slots for District mode ({self.n_time_slots} provided) to accommodate "
+                f"{num_phases} active phases and {num_breaks} breaks. "
+                f"Minimum active slots needed for phases: {num_phases}, available: {total_active_slots_for_play}."
+            )
+        if total_active_slots_for_play <= 0 and self.n_matches_per_team > 0 :
+             raise ValueError(
+                f"Not enough total time slots for District mode: 0 or fewer active slots available after accounting for {num_breaks} breaks."
+            )
+
+
+        active_slots_per_phase_counts = [(total_active_slots_for_play // num_phases) for _ in range(num_phases)]
+        for i in range(total_active_slots_for_play % num_phases):
+            active_slots_per_phase_counts[i] += 1
+
+        break_slot_indices = []
+        end_of_phase_active_slot_indices = []
+        current_model_timeslot_cursor = 0
+
+        for p in range(num_phases):
+            matches_this_phase = chunk_size if p < num_phases - 1 else self.n_matches_per_team - (p * chunk_size)
+            if self.n_rooms == 0 and matches_this_phase > 0: # Should be caught by other validation ideally
+                raise ValueError("Cannot schedule matches in a phase if there are no rooms.")
+
+            min_slots_theoretically_needed = 0
+            if self.n_rooms > 0 : # Avoid division by zero if no rooms
+                min_slots_theoretically_needed = math.ceil((self.n_teams * matches_this_phase) / (3 * self.n_rooms))
+
+            if active_slots_per_phase_counts[p] < min_slots_theoretically_needed:
+                raise ValueError(
+                    f"Phase {p + 1} allocated {active_slots_per_phase_counts[p]} active slots, but theoretically "
+                    f"requires at least {min_slots_theoretically_needed} slots for {self.n_teams} teams to play "
+                    f"{matches_this_phase} matches in {self.n_rooms} rooms. Increase total time slots or adjust other parameters."
+                )
+
+            current_model_timeslot_cursor += active_slots_per_phase_counts[p]
+            end_of_phase_active_slot_indices.append(current_model_timeslot_cursor)
+
+            if p < num_breaks:
+                current_model_timeslot_cursor += 1  # This is the break slot index
+                break_slot_indices.append(current_model_timeslot_cursor)
+
+        # Ensure the calculated total slots don't exceed available n_time_slots
+        # This should be inherently true by how total_active_slots_for_play was calculated,
+        # but as a safeguard for cursor logic:
+        if current_model_timeslot_cursor > self.n_time_slots:
+            raise ValueError(
+                f"Calculated schedule structure ({current_model_timeslot_cursor} slots) exceeds "
+                f"total available time slots ({self.n_time_slots})."
+            )
+
+
+        # Define auxiliary variables for matches played up to a certain timeslot
         matches_played_to_ts = pulp.LpVariable.dicts(
-            "MatchesPlayedToTs",
+            "MatchesPlayedToTsPeriodic",
             (range(1, self.n_teams + 1), range(1, self.n_time_slots + 1)),
             lowBound=0,
-            cat=pulp.LpInteger, # Can be continuous too, sum of binaries will be int
+            cat=pulp.LpInteger,
         )
 
-        for t in range(1, self.n_teams + 1):
-            for ts_upper in range(1, self.n_time_slots + 1):
-                problem += matches_played_to_ts[t][ts_upper] == pulp.lpSum(
-                    variables[m_idx][r_idx][ts_actual]
-                    for m_idx, matchup_obj in enumerate(matchups)
-                    if t in matchup_obj.teams
+        for t_loop in range(1, self.n_teams + 1):
+            for ts_loop in range(1, self.n_time_slots + 1):
+                problem += matches_played_to_ts[t_loop][ts_loop] == pulp.lpSum(
+                    variables[m_lp_idx][r_lp_idx][actual_ts_lp_idx]
+                    for m_lp_idx, matchup_obj_lp_idx in enumerate(matchups)
+                    if t_loop in matchup_obj_lp_idx.teams
+                    for r_lp_idx in range(1, self.n_rooms + 1)
+                    for actual_ts_lp_idx in range(1, ts_loop + 1) # Sum matches up to and including ts_loop
+                ), f"DefineMatchesPlayedPeriodic_T{t_loop}_TS{ts_loop}"
+
+        # Enforce empty break slots
+        for ts_break in break_slot_indices:
+            if 1 <= ts_break <= self.n_time_slots : # Ensure break slot is within bounds
+                problem += pulp.lpSum(
+                    variables[m_idx][r_idx][ts_break]
+                    for m_idx in range(len(matchups))
                     for r_idx in range(1, self.n_rooms + 1)
-                    for ts_actual in range(1, ts_upper + 1) # Summing up to and including ts_upper
-                ), f"DefineMatchesPlayed_T{t}_TS{ts_upper}"
+                ) == 0, f"EmptyBreakSlot_TS{ts_break}"
 
-        # Binary indicator variables: Z_team_ge_CHUNKSIZE_plus_1_by_ts[team][timeslot]
-        # Z = 1 if team 't' has played CHUNK_SIZE + 1 (e.g., 4) or more matches by timeslot 'ts'.
-        # Z = 0 if team 't' has played CHUNK_SIZE (e.g., 3) or fewer matches by timeslot 'ts'.
-        Z_team_ge_chunksize_plus_1_by_ts = pulp.LpVariable.dicts(
-            "Z_TeamPlayedGeChunkPlus1ByTs",
-            (range(1, self.n_teams + 1), range(1, self.n_time_slots + 1)),
-            cat=pulp.LpBinary,
-        )
+        # Enforce match quotas at the end of each active phase
+        for p in range(num_phases):
+            target_cumulative_quota = min((p + 1) * chunk_size, self.n_matches_per_team)
+            slot_to_check_quota_at = end_of_phase_active_slot_indices[p]
 
-        for t1 in range(1, self.n_teams + 1):
-            for ts in range(1, self.n_time_slots + 1):
-                # If matches_played[t1][ts] >= CHUNK_SIZE + 1, then Z_t1_ge_chunksize_plus_1_by_ts[t1][ts] must be 1.
-                # matches_played[t1][ts] >= (CHUNK_SIZE + 1) - M * (1 - Z)
-                # Z = 1 --> matches_played >= CHUNK_SIZE + 1 (correct)
-                # Z = 0 --> matches_played >= CHUNK_SIZE + 1 - M (non-restrictive)
-                problem += matches_played_to_ts[t1][ts] >= \
-                           (CHUNK_SIZE + 1) - BIG_M * (1 - Z_team_ge_chunksize_plus_1_by_ts[t1][ts]), \
-                           f"Z_LowerBound_T{t1}_TS{ts}"
+            if 1 <= slot_to_check_quota_at <= self.n_time_slots : # Ensure slot is within bounds
+                for t_team_idx in range(1, self.n_teams + 1):
+                    problem += matches_played_to_ts[t_team_idx][slot_to_check_quota_at] == target_cumulative_quota, \
+                               f"Quota_Phase{p+1}_Team{t_team_idx}_TS{slot_to_check_quota_at}"
 
-                # If matches_played[t1][ts] <= CHUNK_SIZE, then Z_t1_ge_chunksize_plus_1_by_ts[t1][ts] must be 0.
-                # matches_played[t1][ts] <= CHUNK_SIZE + M * Z
-                # Z = 0 --> matches_played <= CHUNK_SIZE (correct)
-                # Z = 1 --> matches_played <= CHUNK_SIZE + M (non-restrictive)
-                problem += matches_played_to_ts[t1][ts] <= \
-                           CHUNK_SIZE + BIG_M * Z_team_ge_chunksize_plus_1_by_ts[t1][ts], \
-                           f"Z_UpperBound_T{t1}_TS{ts}"
-
-        # Core Phasing Constraint:
-        # If team 't1' has played CHUNK_SIZE + 1 or more matches by timeslot 'ts' (i.e., Z_...[t1][ts] == 1),
-        # then every other team 't2' must have played at least CHUNK_SIZE matches by timeslot 'ts'.
-        for t1 in range(1, self.n_teams + 1):
-            for t2 in range(1, self.n_teams + 1):
-                if t1 == t2:
-                    continue
-                for ts in range(1, self.n_time_slots + 1):
-                    # If Z_...[t1][ts] = 1, then matches_played_to_ts[t2][ts] >= CHUNK_SIZE
-                    # This can be written as: matches_played_to_ts[t2][ts] >= CHUNK_SIZE * Z_...[t1][ts]
-                    # (If Z=1, t2 must have >= CHUNK_SIZE. If Z=0, t2 must have >= 0, which is always true)
-                    problem += matches_played_to_ts[t2][ts] >= \
-                               CHUNK_SIZE * Z_team_ge_chunksize_plus_1_by_ts[t1][ts], \
-                               f"Phasing_T1_{t1}_T2_{t2}_TS{ts}"
         return problem
 
     def _enforce_each_matchup_occurrence(

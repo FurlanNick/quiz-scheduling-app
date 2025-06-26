@@ -67,7 +67,9 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
             n_matches_per_team=request.n_matches_per_team,
             n_rooms=request.n_rooms,
             n_time_slots=request.n_time_slots,
+            tournament_type=request.tournament_type # Pass tournament_type
         )
+        # MatchupsRequest does not need tournament_type, it's for ScheduleSolver
         matchups_request = MatchupsRequest(
             n_teams=request.n_teams,
             n_matches_per_team=request.n_matches_per_team,
