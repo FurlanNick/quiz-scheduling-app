@@ -160,7 +160,7 @@ class MatchupSolver:
         problem = self._enforce_each_team_in_exactly_n_matches_per_team(
             problem, variables, matchups
         )
-        problem = self._enforce_unique_opponents_constraint(problem, variables, matchups)
+        problem = self._enforce_pairwise_meeting_constraints(problem, variables, matchups) # Renamed method
         problem = self._enforce_bench_constraints(problem, variables, matchups)
 
     def _enforce_each_team_in_exactly_n_matches_per_team(
@@ -216,54 +216,53 @@ class MatchupSolver:
                     )
         return problem
 
-    def _enforce_unique_opponents_constraint( # Name could be updated, e.g., _enforce_pairwise_meeting_constraint
+    def _enforce_pairwise_meeting_constraints( # Method renamed
         self, problem: pulp.LpProblem, variables: pulp.LpVariable, matchups: list
     ) -> pulp.LpProblem:
-        if self.n_teams < 2: # No pairs to constrain if less than 2 teams
+        if self.n_teams < 2:
             return problem
 
-        # Calculate lambda (average number of times pairs meet)
-        # self.n_teams - 1 will not be zero due to _validate_inputs (n_teams >= 3)
-
-        if self.tournament_type == "district":
-            # For District mode, ensure each pair meets at least once. No upper bound from this constraint.
+        if self.n_matches_per_team == 0:
             lower_bound_meetings = 0
-            if self.n_matches_per_team > 0 and self.n_teams > 1: # Need at least 2 teams to form a pair
-                lower_bound_meetings = 1
+            upper_bound_meetings = 0
+        elif self.tournament_type == "district":
+            num_opponent_slots = self.n_matches_per_team * 2
+            num_possible_opponents = self.n_teams - 1
 
-            if lower_bound_meetings > 0: # Only add constraint if it's meaningful
-                for team1 in range(1, self.n_teams + 1):
-                    for team2 in range(team1 + 1, self.n_teams + 1):
-                        sum_matchups_for_pair = pulp.lpSum(
-                            variables[i] for i, M in enumerate(matchups) if team1 in M and team2 in M
-                        )
-                        problem += sum_matchups_for_pair >= lower_bound_meetings, \
-                                   f"DistrictOpponentMinMet_T{team1}_T{team2}"
-            # No explicit upper bound constraint for District mode here. Max meetings implicitly handled by total matches.
+            if num_possible_opponents == 0: # Should not happen due to n_teams >= 3 validation
+                return problem
 
-        else: # International mode or default
-            # Use lambda-based floor/ceil for both lower and upper bounds for more even distribution
-            lambda_float = 0.0 # Default if n_teams <= 1, though validated n_teams >= 3
+            if num_opponent_slots < num_possible_opponents:
+                # Cannot play every opponent at least once
+                lower_bound_meetings = 0
+                upper_bound_meetings = 1 # Play available opponents at most once
+            else:
+                # Can play every opponent at least once
+                avg_meetings = num_opponent_slots / num_possible_opponents
+                lower_bound_meetings = math.floor(avg_meetings)
+                upper_bound_meetings = math.ceil(avg_meetings)
+        else:  # International mode
             if self.n_teams - 1 > 0:
-                 lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
-
-            lower_bound_meetings = math.floor(lambda_float)
-            upper_bound_meetings = math.ceil(lambda_float)
-
-            # If no matches are to be played, bounds should be 0
-            if self.n_matches_per_team == 0:
+                lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+                lower_bound_meetings = math.floor(lambda_float)
+                upper_bound_meetings = math.ceil(lambda_float)
+            else: # Should not happen (n_teams >=3)
                 lower_bound_meetings = 0
                 upper_bound_meetings = 0
 
+        # Apply the calculated bounds
+        # (Only add if bounds are meaningful, e.g. upper_bound >= lower_bound)
+        # and if lower_bound > 0 or upper_bound is restrictive (e.g. not n_matches_per_team*2)
+        if not (lower_bound_meetings == 0 and upper_bound_meetings >= self.n_matches_per_team * 2): # Avoid trivial constraints like >=0 and <=very_high_number
             for team1 in range(1, self.n_teams + 1):
                 for team2 in range(team1 + 1, self.n_teams + 1):
                     sum_matchups_for_pair = pulp.lpSum(
                         variables[i] for i, M in enumerate(matchups) if team1 in M and team2 in M
                     )
                     problem += sum_matchups_for_pair >= lower_bound_meetings, \
-                               f"InternationalOpponentMinMet_T{team1}_T{team2}"
+                               f"OpponentMinMet_T{team1}_T{team2}_{self.tournament_type}"
                     problem += sum_matchups_for_pair <= upper_bound_meetings, \
-                               f"InternationalOpponentMaxMet_T{team1}_T{team2}"
+                               f"OpponentMaxMet_T{team1}_T{team2}_{self.tournament_type}"
         return problem
 
     def _validate_inputs(self):

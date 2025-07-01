@@ -720,40 +720,43 @@ class ScheduleSolver:
             , f"{prefix}TeamTotalMatches_T{team}") # Added prefix
 
             if self.n_rooms > 0 and matches_per_team_for_this_context > 0: # Only apply if rooms and matches exist
-                avg_visits_per_room = matches_per_team_for_this_context / self.n_rooms
+                avg_visits = matches_per_team_for_this_context / self.n_rooms
 
-                # Relaxed bounds: avg +/- 1, but not less than 0.
-                min_allowed_visits = math.floor(avg_visits_per_room) -1
-                min_allowed_visits = max(0, min_allowed_visits)
+                lower_bound = math.floor(avg_visits)
+                upper_bound = math.ceil(avg_visits)
 
-                max_allowed_visits = math.ceil(avg_visits_per_room) + 1
+                if self.n_rooms < 5: # User specified different rule for < 5 rooms
+                    upper_bound = math.ceil(avg_visits) + 1
+                    # Consider if lower bound also needs adjustment for <5 rooms, e.g. max(0, floor(avg_visits)-1)
+                    # For now, keeping floor(avg_visits) as the firm minimum.
 
-                # If matches_per_team_for_this_context is 0, these should be 0.
+                lower_bound = max(0, lower_bound) # Ensure non-negative
+
+                if self.n_rooms == 1: # If only one room, all context_matches must be in it
+                    lower_bound = matches_per_team_for_this_context
+                    upper_bound = matches_per_team_for_this_context
+
+                # If matches_per_team_for_this_context is 0, bounds should ensure 0 visits.
                 if matches_per_team_for_this_context == 0:
-                    min_allowed_visits = 0
-                    max_allowed_visits = 0
-                # If n_rooms = 1, min and max should be matches_per_team_for_this_context
-                elif self.n_rooms == 1:
-                    min_allowed_visits = matches_per_team_for_this_context
-                    max_allowed_visits = matches_per_team_for_this_context
-
+                    lower_bound = 0
+                    upper_bound = 0
 
                 for room_j in range(1, self.n_rooms + 1):
                     matches_for_team_in_room_j = pulp.lpSum(
                         variables[i][room_j][k]
                         for i, matchup in enumerate(matchups)
-                        for k in range(1, current_n_time_slots + 1) # Use current_n_time_slots
+                        for k in range(1, current_n_time_slots + 1)
                         if team in matchup.teams
                     )
-                    problem += matches_for_team_in_room_j >= min_allowed_visits, \
-                               f"{prefix}RoomDiversity_Min_T{team}_R{room_j}" # Added prefix
-                    problem += matches_for_team_in_room_j <= max_allowed_visits, \
-                               f"{prefix}RoomDiversity_Max_T{team}_R{room_j}" # Added prefix
-            elif matches_per_team_for_this_context > 0 and self.n_rooms == 0: # Should not happen if validated earlier
-                 problem += pulp.lpSum(1) == 0, f"{prefix}RoomDiversity_Impossible_T{team}" # Force infeasible
+                    problem += matches_for_team_in_room_j >= lower_bound, \
+                               f"{prefix}RoomDiversity_Min_T{team}_R{room_j}"
+                    problem += matches_for_team_in_room_j <= upper_bound, \
+                               f"{prefix}RoomDiversity_Max_T{team}_R{room_j}"
+            elif matches_per_team_for_this_context > 0 and self.n_rooms == 0:
+                 problem += pulp.lpSum(1) == 0, f"{prefix}RoomDiversity_Impossible_T{team}"
         return problem
 
-    def _format_solution(self, solution: Dict[str, float], matchups: List[Matchup], n_time_slots_in_solution: int): # Added n_time_slots_in_solution
+    def _format_solution(self, solution: Dict[str, float], matchups: List[Matchup], n_time_slots_in_solution: int):
         data = []
         epsilon = 1e-6
 
@@ -924,8 +927,8 @@ class ScheduleSolver:
                 if time_slots[i+1] == time_slots[i] + 1 and \
                    time_slots[i+2] == time_slots[i] + 2:
                     print(
-                        f"Team {team} is scheduled for 3 consecutive matches: "
-                        f"{time_slots[i]}, {time_slots[i+1]}, {time_slots[i+2]}."
+                        f"VALIDATION ERROR: Team {team} is scheduled for 3 consecutive matches: "
+                        f"Slots {time_slots[i]}, {time_slots[i+1]}, {time_slots[i+2]}."
                     )
                     return False
         return True
