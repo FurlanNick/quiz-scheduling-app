@@ -44,6 +44,13 @@
             <input type="number" id="international_buffer_slots" name="international_buffer_slots" value="5" min="0" max="30"><br>
             <small>Extra total slots for flexibility. Default: 5.</small><br><br>
 
+            <!-- New input field for Matches per Day (District Mode) -->
+            <div id="matches_per_day_container" style="display: none;"> <!-- Hidden by default -->
+                <label for="matches_per_day">Matches per Day (District Mode):</label>
+                <input type="number" id="matches_per_day" name="matches_per_day" value="3" min="1"><br>
+                <small>Number of matches each team plays per day/event. Default: 3.</small><br><br>
+            </div>
+
             <input type="submit" value="Generate Schedule">
         </form>
     </div>

@@ -46,6 +46,8 @@ class ScheduleRequest(BaseModel):
         ge=0,
         le=30 # Max 30 buffer slots overall seems reasonable
     )
+    matches_per_day: int = Field(default=3, description="Matches per team per day/event for District mode. Default is 3.", ge=1)
+    relax_constraints: bool = Field(False, description="Relax constraints if initial solving fails (longer solve time)")
 
 
 class ScheduleItem(BaseModel):

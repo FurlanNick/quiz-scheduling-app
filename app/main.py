@@ -70,8 +70,9 @@ async def generate_schedule(request: ScheduleRequest) -> ScheduleResponse:
             n_rooms=request.n_rooms,
             # n_time_slots is now calculated internally by ScheduleSolver
             tournament_type=request.tournament_type,
-            phase_buffer_slots=request.phase_buffer_slots, # Pass new buffer params
-            international_buffer_slots=request.international_buffer_slots # Pass new buffer params
+            phase_buffer_slots=request.phase_buffer_slots,
+            international_buffer_slots=request.international_buffer_slots,
+            matches_per_day=request.matches_per_day # Pass the new field
         )
         # MatchupsRequest does not need tournament_type or buffer slots
         matchups_request = MatchupsRequest(

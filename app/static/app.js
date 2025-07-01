@@ -1,5 +1,23 @@
 document.getElementById('scheduleForm').addEventListener('submit', submitForm);
 
+// Function to toggle visibility of matches_per_day input
+function toggleMatchesPerDayInput() {
+    const tournamentType = document.getElementById('tournament_type').value;
+    const matchesPerDayContainer = document.getElementById('matches_per_day_container');
+    if (tournamentType === 'district') {
+        matchesPerDayContainer.style.display = 'block';
+    } else {
+        matchesPerDayContainer.style.display = 'none';
+    }
+}
+
+// Add event listener to tournament_type select
+document.getElementById('tournament_type').addEventListener('change', toggleMatchesPerDayInput);
+
+// Call it once on page load to set initial state
+toggleMatchesPerDayInput();
+
+
 async function submitForm(event) {
     event.preventDefault();
     const n_teams = document.getElementById('n_teams').value;
@@ -9,6 +27,7 @@ async function submitForm(event) {
     const tournament_type = document.getElementById('tournament_type').value;
     const phase_buffer_slots = document.getElementById('phase_buffer_slots').value;
     const international_buffer_slots = document.getElementById('international_buffer_slots').value;
+    const matches_per_day = document.getElementById('matches_per_day').value; // Get new input
 
     // Show the loading spinner
     document.getElementById('spinner').style.display = 'block';
@@ -28,7 +47,8 @@ async function submitForm(event) {
                 // n_time_slots: parseInt(n_time_slots), // Removed
                 tournament_type: tournament_type,
                 phase_buffer_slots: parseInt(phase_buffer_slots),
-                international_buffer_slots: parseInt(international_buffer_slots)
+                international_buffer_slots: parseInt(international_buffer_slots),
+                matches_per_day: parseInt(matches_per_day) // Add new input to payload
             })
         });
 
