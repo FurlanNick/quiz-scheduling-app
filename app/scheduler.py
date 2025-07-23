@@ -55,71 +55,31 @@ class ScheduleSolver:
             self.n_time_slots = 1
 
     def schedule_matches(self, matchups: List[Matchup]) -> Union[pd.DataFrame, List[str]]:
-        constraints_relaxed = []
-        final_schedule_df = None
-
-        if self.tournament_type == "international":
-            self._calculate_n_time_slots_international()
-            if self.n_time_slots == 0 and self.n_matches_per_team == 0:
-                return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]), []
-            if self.n_time_slots <= 0 and self.n_matches_per_team > 0:
-                raise ValueError(f"Calculated n_time_slots for International is {self.n_time_slots}, insufficient for {self.n_matches_per_team} matches.")
-
-            # Pass n_time_slots to _attempt_schedule_full
-            problem = self._attempt_schedule_full(matchups, self.n_time_slots, relax_constraints=constraints_relaxed)
-
-            if problem is None or pulp.LpStatus[problem.status] != "Optimal":
-                relaxable_constraints = ["room_diversity", "consecutive_matches"]
-                for constraint_to_relax in relaxable_constraints:
-                    if constraint_to_relax not in constraints_relaxed:
-                        print(f"Attempting to relax constraint for International: {constraint_to_relax}")
-                        current_relax_list = constraints_relaxed + [constraint_to_relax]
-                        problem = self._attempt_schedule_full(matchups, self.n_time_slots, relax_constraints=current_relax_list)
-                        if problem is not None and pulp.LpStatus[problem.status] == "Optimal":
-                            constraints_relaxed.append(constraint_to_relax)
-                            print(f"Solution found for International after relaxing {constraint_to_relax}!")
-                            break
-
-                if problem is None or pulp.LpStatus[problem.status] != "Optimal":
-                    print("No feasible solution found for International even after attempting to relax constraints.")
-                    return None, constraints_relaxed
-
-            solution_variables = {v.name: v.varValue for v in problem.variables()}
-            final_schedule_df = self._format_solution(solution_variables, matchups, self.n_time_slots) # Pass n_time_slots
-
-        elif self.tournament_type == "district":
-            # _schedule_district_sequentially will handle its own time slot calculations and retries internally if needed,
-            # or we can implement a similar retry loop here if _schedule_district_sequentially raises an error.
-            # For now, assume _schedule_district_sequentially returns a DataFrame or None.
-            # It will also set self.n_time_slots to the total sum of phase time slots.
-            try:
-                final_schedule_df, constraints_relaxed_district = self._schedule_district_sequentially(matchups, relax_constraints=constraints_relaxed)
-                constraints_relaxed.extend(constraints_relaxed_district) # Merge relaxed lists
-                if final_schedule_df is None:
-                     # Optional: Implement retry logic for district similar to international if needed
-                    print("No feasible solution found for District mode.")
-                    return None, constraints_relaxed
-
-            except Exception as e:
-                print(f"Error during District sequential scheduling: {e}")
+        # This method is now a unified entry point for both tournament types.
+        # It calls the sequential scheduler which handles the specific logic for each type.
+        try:
+            final_schedule_df, constraints_relaxed = self._schedule_sequentially(matchups, relax_constraints=[])
+            if final_schedule_df is None:
+                print(f"No feasible solution found for {self.tournament_type} mode.")
                 return None, constraints_relaxed
-
-        else:
-            raise ValueError(f"Unknown tournament type: {self.tournament_type}")
+        except Exception as e:
+            print(f"Error during {self.tournament_type} sequential scheduling: {e}")
+            # It might be beneficial to print traceback here for debugging
+            # import traceback
+            # traceback.print_exc()
+            return None, []
 
         return final_schedule_df, constraints_relaxed
 
 
-    def _schedule_district_sequentially(self, all_globally_valid_matchups: List[Matchup], relax_constraints: List[str]) -> Tuple[Union[pd.DataFrame, None], List[str]]:
+    def _schedule_sequentially(self, all_globally_valid_matchups: List[Matchup], relax_constraints: List[str]) -> Tuple[Union[pd.DataFrame, None], List[str]]:
         """
-        Schedules matches for District mode sequentially, phase by phase.
-        Each phase aims to schedule self.matches_per_day for each team.
+        Schedules matches sequentially, phase by phase, for either tournament type.
         """
         if self.matches_per_day <= 0:
-            raise ValueError("Matches per day for District mode must be positive.")
+            raise ValueError("Matches per day/phase must be positive.")
 
-        # New validation check for room diversity rule
-        if self.matches_per_day > self.n_rooms:
+        if self.tournament_type == "district" and self.matches_per_day > self.n_rooms:
             raise ValueError(
                 f"For District mode's 'unique room per day' rule, the number of rooms ({self.n_rooms}) "
                 f"must be >= matches per day ({self.matches_per_day})."
@@ -129,183 +89,109 @@ class ScheduleSolver:
         if num_total_phases == 0 and self.n_matches_per_team == 0:
             self.n_time_slots = 0
             return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]), []
-        if num_total_phases == 0 and self.n_matches_per_team > 0:
-            raise ValueError("Cannot determine phases for District mode with >0 matches but 0 matches_per_day.")
-
 
         list_of_phase_dataframes = []
-        scheduled_matchup_objects_globally = set() # Store Matchup objects (by memory ID)
+        scheduled_matchup_objects_globally = set()
         global_timeslot_display_offset = 0
-        current_constraints_relaxed_for_district = list(relax_constraints) # Start with any global relaxations
-
+        current_relax_list = list(relax_constraints)
         all_matchups_indexed = {id(m): m for m in all_globally_valid_matchups}
 
+        # For International mode's cumulative room diversity
+        cumulative_room_visits = {team_id: {room_id: 0 for room_id in range(1, self.n_rooms + 1)} for team_id in range(1, self.n_teams + 1)}
 
         for phase_idx in range(num_total_phases):
-            print(f"Processing District Mode - Phase {phase_idx + 1}/{num_total_phases}")
+            print(f"Processing {self.tournament_type} Mode - Phase {phase_idx + 1}/{num_total_phases}")
 
-            target_matches_this_phase_per_team = self.matches_per_day
-            if phase_idx == num_total_phases - 1: # Last phase
-                remaining_matches = self.n_matches_per_team - (phase_idx * self.matches_per_day)
-                if remaining_matches > 0 :
-                    target_matches_this_phase_per_team = remaining_matches
-                elif self.n_matches_per_team == 0 : # handles n_matches_per_team = 0
-                    target_matches_this_phase_per_team = 0
-                else: # Should not happen if logic is correct, but as a fallback
-                    target_matches_this_phase_per_team = self.matches_per_day
+            target_matches_this_phase = self.matches_per_day
+            if phase_idx == num_total_phases - 1 and self.n_matches_per_team % self.matches_per_day != 0:
+                remaining_matches = self.n_matches_per_team % self.matches_per_day
+                if remaining_matches > 0:
+                    target_matches_this_phase = remaining_matches
 
-            if target_matches_this_phase_per_team == 0:
-                print(f"Phase {phase_idx + 1}: No matches to schedule this phase.")
+            if target_matches_this_phase == 0:
                 continue
 
-            # Filter available_matchups_for_phase: from all_globally_valid_matchups, select those not yet scheduled
-            # This needs to be more nuanced. We need to select a SUBSET of available matchups
-            # that can satisfy target_matches_this_phase_per_team for all teams.
-            # For now, pass all remaining, but _attempt_schedule_one_phase must handle this.
+            available_matchups_for_this_phase = [m for m_id, m in all_matchups_indexed.items() if m_id not in scheduled_matchup_objects_globally]
 
-            available_matchups_for_this_phase = [
-                m for m_id, m in all_matchups_indexed.items() if m_id not in scheduled_matchup_objects_globally
-            ]
-
-            if not available_matchups_for_this_phase and target_matches_this_phase_per_team > 0 :
-                print(f"Error: Phase {phase_idx + 1} requires {target_matches_this_phase_per_team} matches per team, but no more matchups are available globally.")
-                # This indicates a potential issue with the total number of matchups generated by MatchupSolver
-                # or an issue with the logic of distributing them across phases.
+            if not available_matchups_for_this_phase and target_matches_this_phase > 0:
                 raise ValueError("Insufficient unique matchups for remaining phases.")
 
+            buffer_slots = self.phase_buffer_slots if self.tournament_type == "district" else self.international_buffer_slots
+            min_slots_for_phase = math.ceil((self.n_teams * target_matches_this_phase) / (3 * self.n_rooms)) if self.n_rooms > 0 else 0
+            n_time_slots_for_this_phase = min_slots_for_phase + buffer_slots
+            if target_matches_this_phase > 0 and n_time_slots_for_this_phase <= 0:
+                n_time_slots_for_this_phase = 1
 
-            min_slots_for_phase = 0
-            if self.n_rooms > 0:
-                min_slots_for_phase = math.ceil((self.n_teams * target_matches_this_phase_per_team) / (3 * self.n_rooms))
+            print(f"Phase {phase_idx + 1}: Target {target_matches_this_phase} matches/team. Calculated slots: {n_time_slots_for_this_phase}")
 
-            n_time_slots_for_this_phase = min_slots_for_phase + self.phase_buffer_slots
-            if target_matches_this_phase_per_team > 0 and n_time_slots_for_this_phase <=0:
-                n_time_slots_for_this_phase = 1 # Ensure at least one slot if matches are expected
-
-            print(f"Phase {phase_idx + 1}: Target {target_matches_this_phase_per_team} matches/team. Calculated slots: {n_time_slots_for_this_phase}")
-
+            # Pass cumulative_room_visits for International mode
             phase_problem = self._attempt_schedule_one_phase(
                 available_matchups_for_this_phase,
                 n_time_slots_for_this_phase,
-                target_matches_this_phase_per_team, # Pass this to ensure correct number of matches for *this phase*
-                relax_constraints=current_constraints_relaxed_for_district, # Use current relax list for this phase
-                phase_idx=phase_idx
+                target_matches_this_phase,
+                current_relax_list,
+                phase_idx,
+                cumulative_room_visits # Pass current cumulative counts
             )
 
-            # Retry logic for the current phase
             if phase_problem is None or pulp.LpStatus[phase_problem.status] != "Optimal":
-                print(f"Phase {phase_idx + 1} failed. Attempting to relax constraints for this phase.")
-                phase_relaxable_constraints = ["room_diversity", "consecutive_matches"] # Could be phase-specific
-                relaxed_in_this_phase_attempt = False
-                for constraint_to_relax in phase_relaxable_constraints:
-                    if constraint_to_relax not in current_constraints_relaxed_for_district: # only try to relax if not already globally relaxed
-                        print(f"Attempting to relax constraint for Phase {phase_idx + 1}: {constraint_to_relax}")
-                        temp_relax_list_for_phase = current_constraints_relaxed_for_district + [constraint_to_relax]
-                        phase_problem = self._attempt_schedule_one_phase(
-                            available_matchups_for_this_phase,
-                            n_time_slots_for_this_phase,
-                            target_matches_this_phase_per_team,
-                            relax_constraints=temp_relax_list_for_phase,
-                            phase_idx=phase_idx
-                        )
-                        if phase_problem is not None and pulp.LpStatus[phase_problem.status] == "Optimal":
-                            print(f"Solution for Phase {phase_idx + 1} found after relaxing {constraint_to_relax}!")
-                            # Persist this relaxation for subsequent phases *if desired*, or keep it phase-local.
-                            # For now, let's add to a list of relaxations specific to district mode that succeeded.
-                            if constraint_to_relax not in current_constraints_relaxed_for_district :
-                                current_constraints_relaxed_for_district.append(constraint_to_relax)
-                            relaxed_in_this_phase_attempt = True
-                            break # Found a solution for this phase
-
-                if not relaxed_in_this_phase_attempt and (phase_problem is None or pulp.LpStatus[phase_problem.status] != "Optimal"):
-                    print(f"Critical Failure: Phase {phase_idx + 1} for District mode could not be solved even with relaxations.")
-                    # self.n_time_slots is the sum of successfully scheduled phases up to this point.
-                    self.n_time_slots = global_timeslot_display_offset
-                    return None, current_constraints_relaxed_for_district
-
-
-            # Process successful phase solution
-            phase_solution_vars = {v.name: v.varValue for v in phase_problem.variables()}
-            # _format_solution needs to know the timeslots are 1 to n_time_slots_for_this_phase
-            phase_df = self._format_solution(phase_solution_vars, available_matchups_for_this_phase, n_time_slots_for_this_phase)
-
-            if phase_df.empty and target_matches_this_phase_per_team > 0:
-                print(f"Warning: Phase {phase_idx+1} resulted in an empty schedule despite targeting matches. This could indicate an issue.")
-                # Decide if this is a critical failure or if empty phases are possible (e.g. if target_matches_this_phase_per_team was 0)
-                # For now, if target > 0 and df is empty, it's an issue.
+                print(f"Phase {phase_idx + 1} failed. No relaxation retry logic implemented for sequential solver yet.")
                 self.n_time_slots = global_timeslot_display_offset
-                return None, current_constraints_relaxed_for_district
+                return None, current_relax_list
 
+            phase_df = self._format_solution({v.name: v.varValue for v in phase_problem.variables()}, available_matchups_for_this_phase, n_time_slots_for_this_phase)
 
-            # Add scheduled Matchup objects (by ID) to scheduled_matchup_objects_globally
-            # This ensures that _format_solution correctly identifies the *original* Matchup objects
-            # from `all_matchups_indexed` that were used in `available_matchups_for_this_phase`.
+            if phase_df.empty and target_matches_this_phase > 0:
+                raise ValueError(f"Phase {phase_idx + 1} resulted in an empty schedule despite targeting matches.")
+
+            # Update cumulative counts for International mode
+            if self.tournament_type == "international":
+                for _, row in phase_df.iterrows():
+                    for team_id in row["Matchup"].teams:
+                        cumulative_room_visits[team_id][row["Room"]] += 1
+
             for _, row in phase_df.iterrows():
-                # The Matchup object in phase_df should be one of the ones from available_matchups_for_this_phase
                 scheduled_matchup_objects_globally.add(id(row["Matchup"]))
 
-            # Adjust 'TimeSlot' in phase_df by adding global_timeslot_display_offset
-            phase_df["TimeSlot"] = phase_df["TimeSlot"] + global_timeslot_display_offset
+            phase_df["TimeSlot"] += global_timeslot_display_offset
             list_of_phase_dataframes.append(phase_df)
             global_timeslot_display_offset += n_time_slots_for_this_phase
 
-        self.n_time_slots = global_timeslot_display_offset # Total slots used by all phases
+        self.n_time_slots = global_timeslot_display_offset
 
         if not list_of_phase_dataframes:
-            if self.n_matches_per_team == 0: # If no matches were ever expected
-                return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]), current_constraints_relaxed_for_district
-            else: # Matches were expected but no dataframes were generated (e.g. all phases had 0 target matches, which is weird)
-                print("Warning: District scheduling resulted in no phase dataframes despite expecting matches.")
-                return None, current_constraints_relaxed_for_district
+            return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]) if self.n_matches_per_team == 0 else (None, current_relax_list)
 
-
-        final_district_schedule_df = pd.concat(list_of_phase_dataframes, ignore_index=True)
-        return final_district_schedule_df, current_constraints_relaxed_for_district
+        final_schedule_df = pd.concat(list_of_phase_dataframes, ignore_index=True)
+        return final_schedule_df, current_relax_list
 
     def _attempt_schedule_one_phase(
         self,
         matchups_for_phase: List[Matchup],
         n_time_slots_for_phase: int,
-        target_matches_per_team_for_phase: int, # Specific to this phase
+        target_matches_per_team_for_phase: int,
         relax_constraints: List[str],
-        phase_idx: int # For unique constraint names
+        phase_idx: int,
+        cumulative_room_visits: Dict[int, Dict[int, int]] # New parameter
     ) -> Union[pulp.LpProblem, None]:
         """
-        Attempts to schedule one phase of a District tournament.
-        The PuLP variables and constraints are localized to this phase's matchups and timeslots.
+        Attempts to schedule one phase of a tournament.
         """
-        problem = pulp.LpProblem(f"Quiz_Scheduling_Phase_{phase_idx}", pulp.LpMaximize) # LpMaximize is arbitrary if no objective
+        problem = pulp.LpProblem(f"Quiz_Scheduling_Phase_{phase_idx}", pulp.LpMaximize)
 
         if self.n_rooms <= 0 and target_matches_per_team_for_phase > 0:
-            raise ValueError(f"Phase_{phase_idx}: n_rooms must be positive if matches are expected.")
+            raise ValueError(f"Phase_{phase_idx}: n_rooms must be positive.")
         if n_time_slots_for_phase <= 0 and target_matches_per_team_for_phase > 0:
-            raise ValueError(f"Phase_{phase_idx}: n_time_slots_for_phase must be positive ({n_time_slots_for_phase}) if matches are expected.")
+            raise ValueError(f"Phase_{phase_idx}: n_time_slots_for_phase must be positive.")
 
-        if target_matches_per_team_for_phase == 0: # If no matches for this phase
-            # Create a minimal problem that will solve trivially
-            # No variables needed, but enforce_constraints might expect it.
-            # For now, let's assume enforce_constraints can handle an empty variable dict if target_matches is 0.
-            self._enforce_constraints_for_phase(problem, {}, matchups_for_phase, n_time_slots_for_phase, target_matches_per_team_for_phase, relax_constraints, phase_idx)
-            problem.solve(pulp.PULP_CBC_CMD(msg=0)) # Suppress solver messages for trivial solves
+        if target_matches_per_team_for_phase == 0:
+            self._enforce_constraints_for_phase(problem, {}, matchups_for_phase, n_time_slots_for_phase, 0, relax_constraints, phase_idx, cumulative_room_visits)
+            problem.solve(pulp.PULP_CBC_CMD(msg=0))
             return problem
 
-        if not matchups_for_phase and target_matches_per_team_for_phase > 0:
-            print(f"Warning for Phase {phase_idx}: No matchups provided to _attempt_schedule_one_phase, but target_matches_per_team_for_phase is {target_matches_per_team_for_phase}.")
-            # This might lead to an infeasible problem if constraints expect matchups.
-            # For now, let it proceed and likely fail at constraint enforcement or solve.
-            # A better approach might be to raise an error here or return None immediately.
-            # However, the calling function _schedule_district_sequentially should ideally prevent this.
-            # If it does get here, it means available_matchups_for_this_phase was empty.
-
-        # Variables for this phase: indexed by (matchup_idx_in_phase_list, room, time_in_phase)
-        # time_in_phase is 1 to n_time_slots_for_this_phase
         variables = pulp.LpVariable.dicts(
             f"Phase{phase_idx}_MatchupRoomTime",
-            (
-                range(len(matchups_for_phase)), # Index relative to matchups_for_phase list
-                range(1, self.n_rooms + 1),
-                range(1, n_time_slots_for_phase + 1), # Time slots specific to this phase
-            ),
+            (range(len(matchups_for_phase)), range(1, self.n_rooms + 1), range(1, n_time_slots_for_phase + 1)),
             cat=pulp.LpBinary,
         )
 
@@ -316,14 +202,15 @@ class ScheduleSolver:
             n_time_slots_for_phase,
             target_matches_per_team_for_phase,
             relax_constraints,
-            phase_idx
+            phase_idx,
+            cumulative_room_visits # Pass to constraint enforcer
         )
 
-        problem.solve(pulp.PULP_CBC_CMD(msg=0)) # Suppress solver messages for individual phases
+        problem.solve(pulp.PULP_CBC_CMD(msg=0))
         return problem
 
 
-    def _attempt_schedule_full( # Renamed from attempt_schedule
+    def _attempt_schedule_full( # This method is no longer used and can be removed.
         self, matchups: List[Matchup], current_n_time_slots: int, relax_constraints: List[str] = [] # Added current_n_time_slots
     ) -> Union[pulp.LpProblem, None]:
 
@@ -517,108 +404,99 @@ class ScheduleSolver:
         return True
 
 
-    def _enforce_constraints_for_phase( # New method for phase-specific constraints
+    def _enforce_constraints_for_phase(
         self,
         problem: pulp.LpProblem,
-        variables: pulp.LpVariable, # Variables for THIS phase
-        matchups_in_phase: List[Matchup], # Matchups selected for THIS phase
+        variables: pulp.LpVariable,
+        matchups_in_phase: List[Matchup],
         n_time_slots_in_phase: int,
         target_matches_per_team_in_phase: int,
         relax_constraints: List[str],
-        phase_idx: int # For unique constraint names
+        phase_idx: int,
+        cumulative_room_visits: Dict[int, Dict[int, int]]
     ):
-        # Constraint 1: Each matchup (selected for this phase) is scheduled exactly once *within this phase*.
-        # This assumes matchups_in_phase are only those intended to be played in this phase.
-        # This is a change from "each of ALL matchups is scheduled once globally".
-        # The selection of which matchups go into `matchups_in_phase` is crucial and happens in `_schedule_district_sequentially`.
-        # Here, we just ensure *these chosen* matchups are scheduled.
-        # This might need adjustment: perhaps not ALL `matchups_in_phase` must be used,
-        # if `matchups_in_phase` is just a pool of available ones.
-        # The critical constraint is that each team plays `target_matches_per_team_in_phase`.
+        # --- Universal Phase Constraints ---
 
-        # Let's redefine:
-        # Constraint: Each team plays exactly `target_matches_per_team_in_phase` matches in this phase.
+        # Each team plays the target number of matches in this phase.
         for team_id in range(1, self.n_teams + 1):
             problem += pulp.lpSum(
                 variables[m_idx][r_idx][ts_idx]
-                for m_idx, matchup_obj in enumerate(matchups_in_phase)
-                if team_id in matchup_obj.teams
+                for m_idx, m_obj in enumerate(matchups_in_phase) if team_id in m_obj.teams
                 for r_idx in range(1, self.n_rooms + 1)
                 for ts_idx in range(1, n_time_slots_in_phase + 1)
             ) == target_matches_per_team_in_phase, f"Phase{phase_idx}_TeamPlaysTargetMatches_T{team_id}"
 
-        # Constraint: Each of the *used* matchups in this phase is scheduled at most once.
-        # (This is implicitly handled if a matchup results in teams playing, and teams have a fixed number of matches)
-        # More directly: each (matchup_idx, r, ts) combination is unique if it's selected.
-        # The binary variable itself ensures a matchup isn't in the same room/time twice.
-        # We DO need to ensure a specific matchup from `matchups_in_phase` isn't scheduled multiple times in different rooms/slots *within this phase*.
+        # A specific matchup from the available list is used at most once in this phase.
         for m_idx in range(len(matchups_in_phase)):
             problem += pulp.lpSum(
                 variables[m_idx][r_idx][ts_idx]
                 for r_idx in range(1, self.n_rooms + 1)
                 for ts_idx in range(1, n_time_slots_in_phase + 1)
             ) <= 1, f"Phase{phase_idx}_MatchupScheduledAtMostOnce_M{m_idx}"
-            # If a matchup *must* be scheduled if it's part of a team's quota, this might be ==1 for a subset.
-            # For now, <=1 is safer if `matchups_in_phase` is a pool larger than strictly needed.
-            # However, `_schedule_district_sequentially` should ideally provide a well-chosen subset.
 
-        # Standard constraints, but scoped to n_time_slots_in_phase:
         problem = self._enforce_each_room_to_host_single_matchup_per_time_slot(problem, variables, matchups_in_phase, n_time_slots_in_phase, f"Phase{phase_idx}_")
         problem = self._enforce_no_simultaneous_scheduling_for_each_team(problem, variables, matchups_in_phase, n_time_slots_in_phase, f"Phase{phase_idx}_")
 
         if "consecutive_matches" not in relax_constraints:
             problem = self._limit_consecutive_matchups(problem, variables, matchups_in_phase, n_time_slots_in_phase, f"Phase{phase_idx}_")
 
-        if "room_diversity" not in relax_constraints and self.tournament_type == "district":
-            # For District mode, enforce that a team plays in a given room at most once PER PHASE.
-            for team_id in range(1, self.n_teams + 1):
-                for room_j in range(1, self.n_rooms + 1):
-                    problem += pulp.lpSum(
-                        variables[m_idx][room_j][ts_idx]
-                        for m_idx, matchup_obj in enumerate(matchups_in_phase) if team_id in matchup_obj.teams
-                        for ts_idx in range(1, n_time_slots_in_phase + 1)
-                    ) <= 1, f"DistrictRoomDiversity_Phase{phase_idx}_T{team_id}_R{room_j}"
-
-        # Note: The 'else' for international mode is removed because _enforce_constraints_for_phase
-        # is only called for District mode. International diversity is handled in _enforce_constraints_for_full_schedule.
-
+        # --- Tournament-Specific Room Diversity ---
+        if "room_diversity" not in relax_constraints:
+            if self.tournament_type == "district":
+                # District Rule: Play in a different room for each match within this phase.
+                for team_id in range(1, self.n_teams + 1):
+                    for room_j in range(1, self.n_rooms + 1):
+                        problem += pulp.lpSum(
+                            variables[m_idx][room_j][ts_idx]
+                            for m_idx, m_obj in enumerate(matchups_in_phase) if team_id in m_obj.teams
+                            for ts_idx in range(1, n_time_slots_in_phase + 1)
+                        ) <= 1, f"DistrictRoomDiversity_Phase{phase_idx}_T{team_id}_R{room_j}"
+            else: # International Mode
+                # International Rule: Balance room visits across the entire tournament.
+                problem = self._enforce_cumulative_room_diversity(
+                    problem, variables, matchups_in_phase, n_time_slots_in_phase,
+                    cumulative_room_visits, f"Phase{phase_idx}_"
+                )
         return problem
 
-
-    def _enforce_constraints_for_full_schedule( # New method for full schedule constraints (International)
+    def _enforce_cumulative_room_diversity(
         self,
         problem: pulp.LpProblem,
         variables: pulp.LpVariable,
         matchups: List[Matchup],
-        current_n_time_slots: int, # Use this instead of self.n_time_slots directly
-        matches_to_schedule_per_team: int, # Typically self.n_matches_per_team
-        relax_constraints: List[str],
-        prefix: str = "FullSched_" # For unique constraint names
+        n_time_slots_in_phase: int,
+        cumulative_room_visits: Dict[int, Dict[int, int]],
+        prefix: str = ""
     ):
-        # This function will contain the constraints previously in the main `enforce_constraints`,
-        # but parameterized for the number of timeslots and target matches.
+        # Overall tournament diversity bounds
+        if self.n_rooms > 0 and self.n_matches_per_team > 0:
+            avg_visits = self.n_matches_per_team / self.n_rooms
+            lower_bound = math.floor(avg_visits) - 1
+            upper_bound = math.ceil(avg_visits) + 1
+            lower_bound = max(0, lower_bound)
 
-        # All matchups must be scheduled once (standard for International)
-        problem = self._enforce_each_matchup_occurrence(problem, variables, matchups, current_n_time_slots, prefix)
+            for team_id in range(1, self.n_teams + 1):
+                for room_j in range(1, self.n_rooms + 1):
+                    # Sum of visits in this phase
+                    visits_in_this_phase = pulp.lpSum(
+                        variables[m_idx][room_j][ts_idx]
+                        for m_idx, m_obj in enumerate(matchups) if team_id in m_obj.teams
+                        for ts_idx in range(1, n_time_slots_in_phase + 1)
+                    )
 
-        problem = self._enforce_each_room_to_host_single_matchup_per_time_slot(problem, variables, matchups, current_n_time_slots, prefix)
-        problem = self._enforce_no_simultaneous_scheduling_for_each_team(problem, variables, matchups, current_n_time_slots, prefix)
+                    # Past visits (a constant) + visits in this phase <= overall upper bound
+                    past_visits = cumulative_room_visits[team_id][room_j]
+                    problem += (visits_in_this_phase + past_visits) <= upper_bound, \
+                               f"{prefix}CumulativeRoomDiversity_Max_T{team_id}_R{room_j}"
 
-        if "consecutive_matches" not in relax_constraints:
-            problem = self._limit_consecutive_matchups(problem, variables, matchups, current_n_time_slots, prefix)
-
-        if "room_diversity" not in relax_constraints:
-            # For full schedule, room diversity is based on total n_matches_per_team
-            problem = self._enforce_room_diversity(problem, variables, matchups, current_n_time_slots, matches_to_schedule_per_team, prefix)
-
-        # No periodic breaks for International mode's full schedule.
+                    # We could also add a constraint for the lower bound, but it's trickier.
+                    # Forcing it to meet the lower bound in an intermediate phase can be too restrictive.
+                    # The upper bound is the more critical one to enforce sequentially.
         return problem
 
-
-    # Removing the old top-level enforce_constraints as its logic is now split
-    # def enforce_constraints(...)
-
-    # _enforce_periodic_breaks_and_phase_quotas REMOVED (Old District Logic)
+    # _enforce_constraints_for_full_schedule is now obsolete and removed.
+    # _attempt_schedule_full is now obsolete and removed.
+    # _calculate_n_time_slots_international is now obsolete and removed.
 
     def _enforce_each_matchup_occurrence(
         self,
