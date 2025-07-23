@@ -1,26 +1,18 @@
-document.getElementById('scheduleForm').addEventListener('submit', submitForm);
-
 // Function to update form visibility and labels based on tournament type
 function updateFormForTournamentType() {
     const tournamentType = document.getElementById('tournament_type').value;
     const matchesPerDayContainer = document.getElementById('matches_per_day_container');
-    const matchesPerDayLabel = document.getElementById('matches_per_day_label');
-    const matchesPerDayHelper = document.getElementById('matches_per_day_helper');
     const extraTimeSlotsLabel = document.getElementById('extra_time_slots_label');
     const extraTimeSlotsHelper = document.getElementById('extra_time_slots_helper');
 
     if (tournamentType === 'district') {
         matchesPerDayContainer.style.display = 'block';
-        matchesPerDayLabel.textContent = 'Matches per Day:';
-        matchesPerDayHelper.textContent = 'Number of matches each team plays per day/event.';
         extraTimeSlotsLabel.textContent = 'Extra Time Slots (per Day)';
         extraTimeSlotsHelper.textContent = 'Might have better success with 1-2 Extra Time Slots per day/phase.';
     } else { // International
-        matchesPerDayContainer.style.display = 'block'; // Now visible for International too
-        matchesPerDayLabel.textContent = 'Matches per Phase:';
-        matchesPerDayHelper.textContent = 'Smaller phases can solve faster. e.g., 3 or 4.';
-        extraTimeSlotsLabel.textContent = 'Extra Time Slots (per Phase)';
-        extraTimeSlotsHelper.textContent = 'Might have better success with 1 or more Extra Time Slots per phase.';
+        matchesPerDayContainer.style.display = 'none';
+        extraTimeSlotsLabel.textContent = 'Extra Time Slots (Overall)';
+        extraTimeSlotsHelper.textContent = 'Might have better success with 1 or more Extra Time Slots overall.';
     }
 }
 
@@ -43,12 +35,11 @@ async function submitForm(event) {
     let phase_buffer_slots = 0;
     let international_buffer_slots = 0;
 
-    // Both modes now use per-phase buffer slots conceptually.
-    // We can send the same value for both and let the backend decide,
-    // or just send the one the backend will use.
-    // Let's send both populated with the same value for simplicity.
-    phase_buffer_slots = parseInt(extra_time_slots);
-    international_buffer_slots = parseInt(extra_time_slots);
+    if (tournament_type === 'district') {
+        phase_buffer_slots = parseInt(extra_time_slots);
+    } else {
+        international_buffer_slots = parseInt(extra_time_slots);
+    }
 
     // Show the loading spinner
     document.getElementById('spinner').style.display = 'block';
