@@ -33,6 +33,18 @@ form {
     gap: 10px;
 }
 
+.form-columns {
+    display: flex;
+    flex-direction: row;
+    gap: 20px; /* Space between columns */
+}
+
+.form-left, .form-right {
+    flex: 1; /* Each column takes up equal space */
+    display: flex;
+    flex-direction: column;
+}
+
 label {
     font-weight: bold;
     margin-bottom: 5px;
