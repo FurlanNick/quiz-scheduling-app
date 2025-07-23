@@ -21,6 +21,12 @@
     <!-- Form container -->
     <div id="formContainer">
         <form id="scheduleForm" onsubmit="submitForm(event)">
+            <label for="tournament_type">Tournament Type:</label>
+            <select id="tournament_type" name="tournament_type">
+                <option value="international">International</option>
+                <option value="district" selected>District</option>
+            </select><br><br>
+
             <div class="form-columns">
                 <!-- Left Column -->
                 <div class="form-left">
@@ -35,19 +41,6 @@
                 </div>
                 <!-- Right Column -->
                 <div class="form-right">
-                    <label for="tournament_type">Tournament Type:</label>
-                    <select id="tournament_type" name="tournament_type">
-                        <option value="international">International</option>
-                        <option value="district" selected>District</option>
-                    </select><br><br>
-
-                    <!-- Unified "Extra Time Slots" input -->
-                    <div id="extra_slots_container">
-                        <label for="extra_time_slots" id="extra_time_slots_label">Extra Time Slots</label>
-                        <input type="number" id="extra_time_slots" name="extra_time_slots" value="0" min="0" max="30"><br>
-                        <small id="extra_time_slots_helper">Might have better success with 1 Extra Time Slot.</small><br><br>
-                    </div>
-
                     <!-- Matches per Day/Phase -->
                     <div id="matches_per_day_container">
                         <label for="matches_per_day" id="matches_per_day_label">Matches per Day:</label>
@@ -68,6 +61,7 @@
         <ol>
             <li><strong>Struggling to generate a valid schedule?</strong> Try setting the number of matches per team to 3 and the number of teams to 7 or more. This setup tends to give the best results. See the documentation for more details.</li>
             <li><strong>Still no luck?</strong> Try increasing the number of time slots first, then adjust the number of rooms if needed.</li>
+            <li><strong>District Quizzing Schedule:</strong> Please be aware that if you are creating a District Quizzing Schedule that it could take quite some time to figure out. It will typically take up to 10 minutes, please let it run for a while.</li>
         </ol>
     </div>
 
