@@ -93,18 +93,17 @@ class MatchupSolver:
                     is_solution = False
 
         # Pairwise opponent check
-        if self.n_teams >= 2 and self.tournament_type != "district":
-            # This check is now only for International mode. District mode has no pairwise constraints.
-
+        if self.n_teams >= 2:
+            # This check now applies to both International and District modes using the same balanced logic.
             expected_min_meetings_check = 0
             expected_max_meetings_check = float('inf')
-            lambda_log_str = "N/A"
+            avg_log_str = "N/A"
 
             if self.n_teams - 1 > 0:
-                lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
-                expected_min_meetings_check = math.floor(lambda_float)
-                expected_max_meetings_check = math.ceil(lambda_float)
-                lambda_log_str = f"~{lambda_float:.2f}"
+                avg_meetings = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+                expected_min_meetings_check = math.floor(avg_meetings)
+                expected_max_meetings_check = math.ceil(avg_meetings)
+                avg_log_str = f"~{avg_meetings:.2f}"
             else: # Should ideally not be reached due to n_teams >= 3 validation
                 expected_min_meetings_check = 0
                 expected_max_meetings_check = 0
@@ -123,8 +122,8 @@ class MatchupSolver:
                     if not (expected_min_meetings_check <= actual_meetings <= expected_max_meetings_check):
                         is_solution = False
                         print(
-                            f"Pair ({team1}, {team2}) met {actual_meetings} times. For International mode, "
-                            f"expected between {expected_min_meetings_check} and {expected_max_meetings_check} (lambda: {lambda_log_str})."
+                            f"Pair ({team1}, {team2}) met {actual_meetings} times. "
+                            f"Expected between {expected_min_meetings_check} and {expected_max_meetings_check} (avg: {avg_log_str})."
                         )
 
         print(f"Valid Matchups?: {is_solution}")
@@ -202,21 +201,16 @@ class MatchupSolver:
         if self.n_teams < 2:
             return problem
 
-        if self.tournament_type == "district":
-            # For district mode, there are no specific pairwise meeting constraints.
-            # The solver is free to choose any valid matchups as long as the core
-            # constraints (total matches per team, seat balance) are met.
-            return problem
+        # Both International and District modes now use the same balanced distribution logic.
 
-        # International mode logic follows
         if self.n_matches_per_team == 0:
             lower_bound_meetings = 0
             upper_bound_meetings = 0
-        else:  # International mode
+        else:
             if self.n_teams - 1 > 0:
-                lambda_float = (2 * self.n_matches_per_team) / (self.n_teams - 1)
-                lower_bound_meetings = math.floor(lambda_float)
-                upper_bound_meetings = math.ceil(lambda_float)
+                avg_meetings = (2 * self.n_matches_per_team) / (self.n_teams - 1)
+                lower_bound_meetings = math.floor(avg_meetings)
+                upper_bound_meetings = math.ceil(avg_meetings)
             else: # Should not happen (n_teams >=3)
                 lower_bound_meetings = 0
                 upper_bound_meetings = 0
