@@ -90,19 +90,25 @@ class ScheduleSolver:
             self.n_time_slots = 0
             return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]), []
 
-        list_of_phase_dataframes = []
-        scheduled_matchup_objects_globally = set()
-        global_timeslot_display_offset = 0
+        relaxable_constraints = ["room_diversity", "consecutive_matches"]
         current_relax_list = list(relax_constraints)
-        all_matchups_indexed = {id(m): m for m in all_globally_valid_matchups}
 
-        # For International mode's cumulative room diversity
-        cumulative_room_visits = {team_id: {room_id: 0 for room_id in range(1, self.n_rooms + 1)} for team_id in range(1, self.n_teams + 1)}
+        final_schedule_df = None
+        all_phases_solved = False
 
-        for phase_idx in range(num_total_phases):
-            print(f"Processing {self.tournament_type} Mode - Phase {phase_idx + 1}/{num_total_phases}")
+        while not all_phases_solved:
+            list_of_phase_dataframes = []
+            scheduled_matchup_objects_globally = set()
+            global_timeslot_display_offset = 0
+            all_matchups_indexed = {id(m): m for m in all_globally_valid_matchups}
+            cumulative_room_visits = {team_id: {room_id: 0 for room_id in range(1, self.n_rooms + 1)} for team_id in range(1, self.n_teams + 1)}
 
-            target_matches_this_phase = self.matches_per_day
+            all_phases_solved = True # Assume success until a phase fails
+
+            for phase_idx in range(num_total_phases):
+                print(f"Processing {self.tournament_type} Mode - Phase {phase_idx + 1}/{num_total_phases} (Relaxations: {current_relax_list})")
+
+                target_matches_this_phase = self.matches_per_day
             if phase_idx == num_total_phases - 1 and self.n_matches_per_team % self.matches_per_day != 0:
                 remaining_matches = self.n_matches_per_team % self.matches_per_day
                 if remaining_matches > 0:
@@ -135,9 +141,9 @@ class ScheduleSolver:
             )
 
             if phase_problem is None or pulp.LpStatus[phase_problem.status] != "Optimal":
-                print(f"Phase {phase_idx + 1} failed. No relaxation retry logic implemented for sequential solver yet.")
-                self.n_time_slots = global_timeslot_display_offset
-                return None, current_relax_list
+                # If a phase fails, we mark it as a failure for the whole sequence attempt.
+                all_phases_solved = False
+                break # Break out of the for loop over phases
 
             phase_df = self._format_solution({v.name: v.varValue for v in phase_problem.variables()}, available_matchups_for_this_phase, n_time_slots_for_this_phase)
 
@@ -156,13 +162,31 @@ class ScheduleSolver:
             phase_df["TimeSlot"] += global_timeslot_display_offset
             list_of_phase_dataframes.append(phase_df)
             global_timeslot_display_offset += n_time_slots_for_this_phase
+            # End of for loop over phases
 
-        self.n_time_slots = global_timeslot_display_offset
+        if not all_phases_solved:
+            # A phase failed in the `for` loop. Check if we can relax more constraints.
+            can_relax_more = False
+            for constraint in relaxable_constraints:
+                if constraint not in current_relax_list:
+                    print(f"Entire sequence failed. Adding '{constraint}' to relaxation list and retrying.")
+                    current_relax_list.append(constraint)
+                    can_relax_more = True
+                    break # Found a new constraint to relax, will restart the while loop
 
-        if not list_of_phase_dataframes:
-            return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]) if self.n_matches_per_team == 0 else (None, current_relax_list)
+            if not can_relax_more:
+                # No more constraints to relax, so exit the while loop
+                print("All relaxation options have been exhausted.")
+                break # Exit while loop
 
-        final_schedule_df = pd.concat(list_of_phase_dataframes, ignore_index=True)
+        # If we get here and all_phases_solved is true, the while loop will exit.
+
+        if all_phases_solved:
+            self.n_time_slots = global_timeslot_display_offset
+            if not list_of_phase_dataframes:
+                 return pd.DataFrame(columns=["TimeSlot", "Room", "Matchup"]) if self.n_matches_per_team == 0 else (None, current_relax_list)
+            final_schedule_df = pd.concat(list_of_phase_dataframes, ignore_index=True)
+
         return final_schedule_df, current_relax_list
 
     def _attempt_schedule_one_phase(
