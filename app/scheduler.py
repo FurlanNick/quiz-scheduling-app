@@ -614,21 +614,17 @@ class ScheduleSolver:
             if self.n_rooms > 0 and matches_per_team_for_this_context > 0: # Only apply if rooms and matches exist
                 avg_visits = matches_per_team_for_this_context / self.n_rooms
 
-                lower_bound = math.floor(avg_visits)
-                upper_bound = math.ceil(avg_visits)
+                # Base bounds are avg +/- 1, as per user request.
+                lower_bound = math.floor(avg_visits) - 1
+                upper_bound = math.ceil(avg_visits) + 1
 
-                if self.n_rooms < 5: # User specified different rule for < 5 rooms
-                    upper_bound = math.ceil(avg_visits) + 1
-                    # Consider if lower bound also needs adjustment for <5 rooms, e.g. max(0, floor(avg_visits)-1)
-                    # For now, keeping floor(avg_visits) as the firm minimum.
+                # But ensure lower bound is not negative.
+                lower_bound = max(0, lower_bound)
 
-                lower_bound = max(0, lower_bound) # Ensure non-negative
-
-                if self.n_rooms == 1: # If only one room, all context_matches must be in it
+                if self.n_rooms == 1:
                     lower_bound = matches_per_team_for_this_context
                     upper_bound = matches_per_team_for_this_context
 
-                # If matches_per_team_for_this_context is 0, bounds should ensure 0 visits.
                 if matches_per_team_for_this_context == 0:
                     lower_bound = 0
                     upper_bound = 0
