@@ -118,6 +118,13 @@ class ScheduleSolver:
         if self.matches_per_day <= 0:
             raise ValueError("Matches per day for District mode must be positive.")
 
+        # New validation check for room diversity rule
+        if self.matches_per_day > self.n_rooms:
+            raise ValueError(
+                f"For District mode's 'unique room per day' rule, the number of rooms ({self.n_rooms}) "
+                f"must be >= matches per day ({self.matches_per_day})."
+            )
+
         num_total_phases = math.ceil(self.n_matches_per_team / self.matches_per_day)
         if num_total_phases == 0 and self.n_matches_per_team == 0:
             self.n_time_slots = 0
@@ -562,12 +569,19 @@ class ScheduleSolver:
         if "consecutive_matches" not in relax_constraints:
             problem = self._limit_consecutive_matchups(problem, variables, matchups_in_phase, n_time_slots_in_phase, f"Phase{phase_idx}_")
 
-        if "room_diversity" not in relax_constraints:
-            # Room diversity for a single phase is tricky. The global diversity is over n_matches_per_team.
-            # For a phase, it's over target_matches_per_team_in_phase.
-            problem = self._enforce_room_diversity(problem, variables, matchups_in_phase, n_time_slots_in_phase, target_matches_per_team_in_phase, f"Phase{phase_idx}_")
+        if "room_diversity" not in relax_constraints and self.tournament_type == "district":
+            # For District mode, enforce that a team plays in a given room at most once PER PHASE.
+            for team_id in range(1, self.n_teams + 1):
+                for room_j in range(1, self.n_rooms + 1):
+                    problem += pulp.lpSum(
+                        variables[m_idx][room_j][ts_idx]
+                        for m_idx, matchup_obj in enumerate(matchups_in_phase) if team_id in matchup_obj.teams
+                        for ts_idx in range(1, n_time_slots_in_phase + 1)
+                    ) <= 1, f"DistrictRoomDiversity_Phase{phase_idx}_T{team_id}_R{room_j}"
 
-        # The old _enforce_periodic_breaks_and_phase_quotas is NOT called here. That was for the old District model.
+        # Note: The 'else' for international mode is removed because _enforce_constraints_for_phase
+        # is only called for District mode. International diversity is handled in _enforce_constraints_for_full_schedule.
+
         return problem
 
 
